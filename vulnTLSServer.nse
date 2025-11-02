@@ -110,10 +110,38 @@ local function check_tls_props(host, port)
     return nil
   end
 
-  -- get negotiated parameters (API names may variar según nmap version)
-  local proto = sock:ssl_protocol() or sock:version or "unknown"
-  local cipher = sock:ssl_cipher() or "unknown"
-  local compression = sock:ssl_compression and sock:ssl_compression() or false
+    -- get negotiated parameters (API names may vary depending on nmap version)
+  local proto = "unknown"
+  local cipher = "unknown"
+  local compression = false
+
+  -- some socket APIs expose methods, others expose fields - check safely
+  if sock then
+    -- protocol
+    if type(sock.ssl_protocol) == "function" then
+      proto = sock:ssl_protocol() or proto
+    elseif type(sock.ssl_protocol) ~= "nil" then
+      proto = sock.ssl_protocol or proto
+    elseif type(sock.version) == "function" then
+      proto = sock:version() or proto
+    elseif type(sock.version) ~= "nil" then
+      proto = sock.version or proto
+    end
+
+    -- cipher
+    if type(sock.ssl_cipher) == "function" then
+      cipher = sock:ssl_cipher() or cipher
+    elseif type(sock.ssl_cipher) ~= "nil" then
+      cipher = sock.ssl_cipher or cipher
+    end
+
+    -- compression
+    if type(sock.ssl_compression) == "function" then
+      compression = sock:ssl_compression() or compression
+    elseif type(sock.ssl_compression) ~= "nil" then
+      compression = sock.ssl_compression or compression
+    end
+  end
 
   -- Compression check
   if compression and compression ~= "none" then
