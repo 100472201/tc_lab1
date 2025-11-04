@@ -157,13 +157,24 @@ action = function(host, port)
       table.insert(alerts.low, string.format("IP address found in certificate: %s.", name))
     end
   end
-  
-  local output = stdnse.output_table()
-  for level, messages in pairs(alerts) do
-    if #messages > 0 then
-      output[level] = messages
+  local output_lines = {}
+  local severities = {"critical", "high", "medium", "low"}
+
+  for _, severity in ipairs(severities) do
+    if alerts[severity] and #alerts[severity] > 0 then
+      table.insert(output_lines, "**********************")
+      table.insert(output_lines, string.format("%s ALERTS: %d", string.upper(severity), #alerts[severity]))
+      table.insert(output_lines, "**********************")
+      for _, msg in ipairs(alerts[severity]) do
+        table.insert(output_lines, "- " .. msg)
+      end
+      table.insert(output_lines, "**********************")
     end
   end
 
-  return output
+  if #output_lines > 0 then
+    return table.concat(output_lines, "\n")
+  else
+    return nil
+  end
 end
