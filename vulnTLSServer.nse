@@ -58,7 +58,11 @@ action = function(host, port)
 
   -- Check for self-signed certificate
   if stringify_name(cert.subject) == stringify_name(cert.issuer) then
-    table.insert(alerts.high, "Self-signed certificate.")
+    local subj = cert.subject.commonName or stringify_name(cert.subject)
+    local issuer = cert.issuer.commonName or stringify_name(cert.issuer)
+    table.insert(alerts.critical, string.format(
+      "Self-signed certificate detected. Subject and issuer are identical. Subject: %s; Issuer: %s.",
+      subj, issuer))
   end
 
   -- Check for certificate type
