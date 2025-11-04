@@ -98,6 +98,11 @@ action = function(host, port)
     table.insert(alerts.medium, string.format("Certificate lifespan is too long: %.0f days (more than 366 days).", lifespan_days))
   end
 
+  -- Check for SHA-1 signature
+  if cert.sig_algorithm and string.find(cert.sig_algorithm:lower(), "sha1") then
+    table.insert(alerts.critical, "Certificate signature uses SHA-1 (deprecated)")
+  end
+
   -- Check for domain name mismatch
   local common_name = cert.subject.commonName
   local subject_alt_names = {}
@@ -121,13 +126,40 @@ action = function(host, port)
   end
 
   -- Check for weak cipher suites
-  if port_state and port_state.ssl_tunnel and port_state.ssl_tunnel.cipher then
-    local cipher = port_state.ssl_tunnel.cipher
-    if string.find(cipher, "CBC") then
-      table.insert(alerts.critical, string.format("Weak cipher suite used: %s (uses CBC mode).", cipher))
+  local ciphers = port.version and port.version.service_data and port.version.service_data.ciphers
+  if ciphers then
+    local allowlist = {
+      ["TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"] = true,
+      ["TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"] = true,
+      ["TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"] = true,
+      ["TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"] = true,
+      ["TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256"] = true,
+      ["TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"] = true,
+      ["TLS_DHE_RSA_WITH_AES_128_GCM_SHA256"] = true,
+      ["TLS_DHE_RSA_WITH_AES_256_GCM_SHA384"] = true,
+      ["TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256"] = true,
+    }
+    for _, cipher in ipairs(ciphers) do
+      local cipher_name = cipher.name
+      if not allowlist[cipher_name] then
+        if string.find(cipher_name, "CBC") then
+          table.insert(alerts.critical, string.format("Weak cipher suite used: %s (uses CBC mode).", cipher_name))
+        elseif (string.find(cipher_name, "_SHA") or string.find(cipher_name, "_SHA1")) and not string.find(cipher_name, "SHA256") and not string.find(cipher_name, "SHA384") then
+          table.insert(alerts.critical, string.format("Weak cipher suite used: %s (uses SHA-1 hash).", cipher_name))
+        else
+          table.insert(alerts.high, string.format("Server supports cipher outside allowlist: %s", cipher_name))
+        end
+      end
     end
-    if string.find(cipher, "_SHA") and not string.find(cipher, "SHA256") and not string.find(cipher, "SHA384") then
-      table.insert(alerts.critical, string.format("Weak cipher suite used: %s (uses SHA-1 hash).", cipher))
+  else
+    if port_state and port_state.ssl_tunnel and port_state.ssl_tunnel.cipher then
+      local cipher = port_state.ssl_tunnel.cipher
+      if string.find(cipher, "CBC") then
+        table.insert(alerts.critical, string.format("Weak cipher suite used: %s (uses CBC mode).", cipher))
+      end
+      if (string.find(cipher, "_SHA") or string.find(cipher, "_SHA1")) and not string.find(cipher, "SHA256") and not string.find(cipher, "SHA384") then
+        table.insert(alerts.critical, string.format("Weak cipher suite used: %s (uses SHA-1 hash).", cipher))
+      end
     end
   end
 
