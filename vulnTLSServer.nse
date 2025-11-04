@@ -61,18 +61,37 @@ action = function(host, port)
     table.insert(alerts.high, "Self-signed certificate.")
   end
 
-  -- Check for weak key size
-  if cert.pubkey.type == "rsa" and cert.pubkey.bits < 2048 then
-    table.insert(alerts.medium, string.format("Weak key: %s bits %s.", cert.pubkey.bits, cert.pubkey.type))
+  -- Check for certificate type
+  if cert.pubkey.type == "rsa" then
+    if cert.pubkey.bits < 2048 then
+      table.insert(alerts.high, string.format("Weak key: %s bits %s.", cert.pubkey.bits, cert.pubkey.type))
+    end
+  elseif cert.pubkey.type == "ec" then
+    if cert.pubkey.ecdhparams.curve_params.curve ~= "secp256r1" then
+      table.insert(alerts.high, string.format("Weak key: %s curve.", cert.pubkey.ecdhparams.curve_params.curve))
+    end
+  else
+    table.insert(alerts.high, string.format("Unsupported key type: %s.", cert.pubkey.type))
   end
 
   -- Check validity
   local now = os.time()
-  if cert.validity.notBefore and now < os.time(cert.validity.notBefore) then
+  local notBefore = os.time(cert.validity.notBefore)
+  local notAfter = os.time(cert.validity.notAfter)
+
+  if now < notBefore then
     table.insert(alerts.high, "Certificate is not yet valid.")
   end
-  if cert.validity.notAfter and now > os.time(cert.validity.notAfter) then
+  if now > notAfter then
     table.insert(alerts.high, "Certificate has expired.")
+  end
+
+  local lifespan_days = (notAfter - notBefore) / (60 * 60 * 24)
+  if lifespan_days < 90 then
+    table.insert(alerts.medium, string.format("Certificate lifespan is too short: %.0f days (less than 90 days).", lifespan_days))
+  end
+  if lifespan_days > 366 then
+    table.insert(alerts.medium, string.format("Certificate lifespan is too long: %.0f days (more than 366 days).", lifespan_days))
   end
 
   -- Check for domain name mismatch
@@ -88,6 +107,26 @@ action = function(host, port)
     end
   end
 
+  -- Check for supported protocols
+  local port_state = nmap.get_port_state(host, port)
+  if port_state and port_state.ssl_tunnel and port_state.ssl_tunnel.version then
+    local version = port_state.ssl_tunnel.version
+    if version == "TLSv1.0" or version == "SSLv3" then
+      table.insert(alerts.high, string.format("Unsupported protocol version: %s.", version))
+    end
+  end
+
+  -- Check for weak cipher suites
+  if port_state and port_state.ssl_tunnel and port_state.ssl_tunnel.cipher then
+    local cipher = port_state.ssl_tunnel.cipher
+    if string.find(cipher, "CBC") then
+      table.insert(alerts.critical, string.format("Weak cipher suite used: %s (uses CBC mode).", cipher))
+    end
+    if string.find(cipher, "_SHA") and not string.find(cipher, "SHA256") and not string.find(cipher, "SHA384") then
+      table.insert(alerts.critical, string.format("Weak cipher suite used: %s (uses SHA-1 hash).", cipher))
+    end
+  end
+
   local matches_cn = (common_name and host.targetname:match(common_name:gsub("*", ".*")))
   local matches_san = false
   for _, san in ipairs(subject_alt_names) do
@@ -99,6 +138,24 @@ action = function(host, port)
 
   if not matches_cn and not matches_san then
     table.insert(alerts.medium, string.format("Domain name mismatch: %s does not match %s or any subject alternative names.", host.targetname, common_name))
+  end
+
+  -- Check for non-qualified hostnames and IP addresses in certificate
+  local names_to_check = {}
+  if common_name then
+    table.insert(names_to_check, common_name)
+  end
+  for _, san in ipairs(subject_alt_names) do
+    table.insert(names_to_check, san)
+  end
+
+  for _, name in ipairs(names_to_check) do
+    if not string.find(name, "%.") then
+      table.insert(alerts.low, string.format("Non-qualified hostname in certificate: %s.", name))
+    end
+    if string.match(name, "^%d+.%d+.%d+.%d+$") then
+      table.insert(alerts.low, string.format("IP address found in certificate: %s.", name))
+    end
   end
   
   local output = stdnse.output_table()
