@@ -152,13 +152,26 @@ action = function(host, port)
       end
     end
   else
-    if port_state and port_state.ssl_tunnel and port_state.ssl_tunnel.cipher then
-      local cipher = port_state.ssl_tunnel.cipher
-      if string.find(cipher, "CBC") then
-        table.insert(alerts.critical, string.format("Weak cipher suite used: %s (uses CBC mode).", cipher))
-      end
-      if (string.find(cipher, "_SHA") or string.find(cipher, "_SHA1")) and not string.find(cipher, "SHA256") and not string.find(cipher, "SHA384") then
-        table.insert(alerts.critical, string.format("Weak cipher suite used: %s (uses SHA-1 hash).", cipher))
+    -- Fallback to manual check of weak ciphers
+    local weak_ciphers_to_test = {
+      "TLS_RSA_WITH_AES_128_CBC_SHA",
+      "TLS_RSA_WITH_AES_256_CBC_SHA",
+      "TLS_DHE_RSA_WITH_AES_128_CBC_SHA",
+      "TLS_DHE_RSA_WITH_AES_256_CBC_SHA",
+    }
+    for _, cipher_name in ipairs(weak_ciphers_to_test) do
+      local sock = nmap.new_socket()
+      sock:set_timeout(5000)
+      local status, err = sock:connect(host, port)
+      if status then
+        local status_hello, err_hello = tls.client_hello(sock, nil, {cipher_name})
+        if status_hello then
+          -- The server accepted the cipher
+          table.insert(alerts.critical, string.format("Server supports weak CBC cipher: %s", cipher_name))
+          sock:close()
+          break -- Stop after finding one
+        end
+        sock:close()
       end
     end
   end
