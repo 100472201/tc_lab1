@@ -107,11 +107,13 @@ action = function(host, port)
   local protocols_to_check = {"TLSv1.3", "TLSv1.2", "TLSv1.1", "TLSv1.0"}
   for _, proto in ipairs(protocols_to_check) do
     local sock = nmap.new_socket()
-    sock:set_timeout(5000)
-    local status, err = sock:connect(host, port)
-    if status then
-      local status_hello, err_hello = tls.client_hello(sock, proto, nil)
-      if status_hello then
+    sock:set_timeout(3000)
+    local ok = sock:connect(host, port)
+    if ok then
+      local status_hello = false
+      -- try sending client hello for this specific protocol
+      local ok_hello, _ = tls.client_hello(sock, proto)
+      if ok_hello then
         table.insert(supported_protocols, proto)
       end
       sock:close()
@@ -129,19 +131,11 @@ action = function(host, port)
     if proto == "TLSv1.0" then has_tls1_0 = true end
   end
 
-  if not has_tls1_2 and not has_tls1_3 then
-    if has_tls1_0 or has_tls1_1 then
-      table.insert(alerts.high, "Outdated TLS Support. The server does not support TLS 1.2 or TLS 1.3, but supports older protocols: " .. table.concat(supported_protocols, ", "))
-    end
-  else -- Server supports TLS 1.2 or 1.3
-    if has_tls1_1 then
-      table.insert(alerts.high, "Outdated TLS Support. The server supports the outdated TLS 1.1 protocol along with modern protocols.")
-    end
-    if has_tls1_0 then
-      table.insert(alerts.high, "Outdated TLS Support. The server supports the outdated TLS 1.0 protocol along with modern protocols.")
-    end
+    -- Raise HIGH only if server does NOT support TLS 1.2/1.3 but DOES support older versions.
+  if not has_tls1_2 and not has_tls1_3 and (has_tls1_1 or has_tls1_0) then
+    table.insert(alerts.high, "Outdated TLS Support. The server does not support TLS 1.2 or TLS 1.3 but supports older protocols: " .. table.concat(supported_protocols, ", "))
   end
-
+  
   -- 3. Check for cipher suites
   -- Check for weak cipher suites
   local ciphers = port.version and port.version.service_data and port.version.service_data.ciphers
