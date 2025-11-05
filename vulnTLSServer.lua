@@ -146,7 +146,6 @@ action = function(host, port)
   end
 
   -- 3. Check for weak cipher suites
-    -- 3. Check for cipher suites (use ssl-enum-ciphers output when present, group alerts)
   local function normalize_cipher(name)
     return (name or ""):upper():gsub("%-", "_"):gsub("%s+", "")
   end
@@ -163,145 +162,160 @@ action = function(host, port)
     "DHE-RSA-CHACHA20-POLY1305"
   }
   local recommended_lookup = {}
-  for _, c in ipairs(recommended_ciphers) do
-    recommended_lookup[normalize_cipher(c)] = true
-  end
+  for _, c in ipairs(recommended_ciphers) do recommended_lookup[normalize_cipher(c)] = true end
 
-  -- map cipher_name -> set of protocols where found
-  local cipher_protocols = {}
+  -- A reasonably broad probe list. Add/remove entries if you want to speed up or broaden detection.
+  local probe_ciphers = {
+    -- CBC / legacy (we want to catch these as critical)
+    "TLS_RSA_WITH_AES_128_CBC_SHA",
+    "TLS_RSA_WITH_AES_256_CBC_SHA",
+    "TLS_DHE_RSA_WITH_AES_128_CBC_SHA",
+    "TLS_DHE_RSA_WITH_AES_256_CBC_SHA",
+    "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+    "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+    "TLS_RSA_WITH_3DES_EDE_CBC_SHA",
+    "TLS_RSA_WITH_CAMELLIA_128_CBC_SHA",
+    "TLS_RSA_WITH_CAMELLIA_256_CBC_SHA",
+    "TLS_RSA_WITH_SEED_CBC_SHA",
+    -- SHA1-legacy markers (many overlap with CBC above)
+    "TLS_RSA_WITH_AES_128_CBC_SHA",
+    -- Modern / recommended
+    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+    "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+    "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+    "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305",
+    "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305",
+    "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256",
+    "TLS_DHE_RSA_WITH_AES_256_GCM_SHA384",
+    "TLS_DHE_RSA_WITH_CHACHA20_POLY1305",
+    -- Other commonly-seen (not recommended)
+    "TLS_RSA_WITH_AES_128_GCM_SHA256",
+    "TLS_RSA_WITH_AES_256_GCM_SHA384",
+    "TLS_RSA_WITH_AES_128_CBC_SHA256",
+    "TLS_RSA_WITH_AES_256_CBC_SHA256",
+    -- Extra legacy / odd
+    "TLS_RSA_WITH_RC4_128_SHA",
+    "TLS_ECDHE_RSA_WITH_CAMELLIA_128_CBC_SHA256",
+    "TLS_DHE_RSA_WITH_CAMELLIA_128_CBC_SHA",
+    "TLS_DHE_RSA_WITH_CAMELLIA_256_CBC_SHA",
+  }
 
-  -- helper to record a cipher was seen under a protocol
-  local function record_cipher(proto, name)
-    if not name then return end
-    local n = name
-    if not cipher_protocols[n] then cipher_protocols[n] = {} end
-    cipher_protocols[n][proto] = true
-  end
+  -- storage for accepted ciphers
+  local accepted = {}
 
-  -- 1) Prefer data from ssl-enum-ciphers: port.version.service_data
-  if port.version and port.version.service_data then
-    local sd = port.version.service_data
-    -- compressors check (critical if anything other than NULL)
-    if sd.compressors and type(sd.compressors) == "table" then
-      for _, comp in ipairs(sd.compressors) do
-        if comp and comp ~= "NULL" and comp ~= "null" then
-          table.insert(alerts.critical, "Enable Compression. TLS compression is enabled on the server (compressor: " .. tostring(comp) .. ").")
-        end
-      end
+  -- helper to try multiple tls.client_hello call signatures for compatibility
+  local function try_cipher_probe(host, port, cipher_name, timeout_ms)
+    timeout_ms = timeout_ms or 3000
+    local sock = nmap.new_socket()
+    sock:set_timeout(timeout_ms)
+    local ok_conn, conn_err = sock:connect(host, port)
+    if not ok_conn then
+      sock:close()
+      return false
     end
 
-    -- ssl-enum-ciphers may present a table keyed by protocol or an array of tables
-    if sd.ciphers then
-      -- sd.ciphers may be array of tables with fields 'protocol' and 'ciphers' OR simple array of cipher entries
-      for _, entry in ipairs(sd.ciphers) do
-        if type(entry) == "table" and entry.protocol and entry.ciphers then
-          -- entry.ciphers is list of tables with .name
-          for _, c in ipairs(entry.ciphers) do
-            if type(c) == "table" and c.name then
-              record_cipher(entry.protocol, c.name)
-            elseif type(c) == "string" then
-              record_cipher(entry.protocol, c)
-            end
-          end
-        elseif type(entry) == "table" and entry.name and entry.protocol then
-          -- sometimes single cipher entries
-          record_cipher(entry.protocol, entry.name)
-        elseif type(entry) == "string" then
-          -- unknown protocol context, mark under "UNKNOWN"
-          record_cipher("UNKNOWN", entry)
-        end
-      end
+    local accepted_flag = false
+
+    -- Try signature A: tls.client_hello(sock, nil, {cipher})
+    local succ, res = pcall(function() return tls.client_hello(sock, nil, {cipher_name}) end)
+    if succ and res then accepted_flag = true end
+
+    -- Try signature B: tls.client_hello(sock, nil, nil, {cipher})
+    if not accepted_flag then
+      succ, res = pcall(function() return tls.client_hello(sock, nil, nil, {cipher_name}) end)
+      if succ and res then accepted_flag = true end
+    end
+
+    -- Try signature C: tls.client_hello(sock, cipher) (older variants)
+    if not accepted_flag then
+      succ, res = pcall(function() return tls.client_hello(sock, cipher_name) end)
+      if succ and res then accepted_flag = true end
+    end
+
+    -- Ensure socket closed
+    pcall(function() sock:close() end)
+    return accepted_flag
+  end
+
+  -- Probe each cipher (parallelizing would be nicer but keep it simple & safe)
+  for _, c in ipairs(probe_ciphers) do
+    local ok = false
+    -- protect each probe from errors
+    local succ, res = pcall(function() return try_cipher_probe(host, port, c, 2000) end)
+    if succ and res then ok = true end
+    if ok then
+      accepted[c] = true
     end
   end
 
-  -- 3) Final fallback: probe a short set of well-known CBC/legacy ciphers (try multiple client_hello signatures)
-  if next(cipher_protocols) == nil then
-    local fallback_probe = {
+  -- If we found none, we can still try a smaller focused list of legacy ciphers to force detection
+  if next(accepted) == nil then
+    local short_probe = {
       "TLS_RSA_WITH_AES_128_CBC_SHA",
-      "TLS_RSA_WITH_AES_256_CBC_SHA",
       "TLS_DHE_RSA_WITH_AES_128_CBC_SHA",
-      "TLS_DHE_RSA_WITH_AES_256_CBC_SHA",
-      "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
-      "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA"
+      "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
     }
-    for _, probe in ipairs(fallback_probe) do
-      local sock = nmap.new_socket()
-      sock:set_timeout(3000)
-      local ok = sock:connect(host, port)
-      if ok then
-        local accepted = false
-        -- try multiple calling conventions for tls.client_hello (some NSE versions differ)
-        local succ, res = pcall(function() return tls.client_hello(sock, nil, {probe}) end)
-        if succ and res then accepted = true end
-        if not accepted then
-          succ, res = pcall(function() return tls.client_hello(sock, nil, nil, {probe}) end)
-          if succ and res then accepted = true end
-        end
-        if not accepted then
-          succ, res = pcall(function() return tls.client_hello(sock, probe) end)
-          if succ and res then accepted = true end
-        end
-        if accepted then record_cipher("PROBED", probe) end
-        sock:close()
-      end
+    for _, c in ipairs(short_probe) do
+      local succ, res = pcall(function() return try_cipher_probe(host, port, c, 2000) end)
+      if succ and res then accepted[c] = true end
     end
   end
 
-  -- If still empty, note that we couldn't enumerate ciphers
-  if next(cipher_protocols) == nil then
-    stdnse.debug1("vulnTLSServer: could not enumerate cipher suites (no port.version data, sslcert.getCipherSuites failed, and probes found nothing)")
-  end
+  -- Analyze accepted ciphers and create grouped alerts
+  local cbc_list = {}
+  local sha_list = {}
+  local nonrec_list = {}
 
-  -- group results
-  local cbc_set = {}
-  local sha_set = {}
-  local nonrec_set = {}
-
-  for cipher_name, protos in pairs(cipher_protocols) do
+  for cipher_name, _ in pairs(accepted) do
     local norm = normalize_cipher(cipher_name)
-    -- detect CBC
-    if string.find(norm, "CBC") then
-      cbc_set[cipher_name] = protos
-    end
-    -- detect SHA-1 / legacy _SHA
+
+    -- CBC => CRITICAL
+    if string.find(norm, "CBC") then table.insert(cbc_list, cipher_name) end
+
+    -- SHA-1 or legacy _SHA => CRITICAL
     if string.find(norm, "SHA1") or (string.find(norm, "_SHA") and
        not (string.find(norm, "SHA256") or string.find(norm, "SHA384") or string.find(norm, "SHA512") or string.find(norm, "SHA224"))) then
-      sha_set[cipher_name] = protos
+      table.insert(sha_list, cipher_name)
     end
-    -- detect not-in-recommendation (HIGH) — only if not already in recommended list
+
+    -- HIGH if not in recommended list (but we will remove those already counted as critical later)
     if not recommended_lookup[norm] then
-      nonrec_set[cipher_name] = protos
+      table.insert(nonrec_list, cipher_name)
     end
   end
 
-  -- remove from nonrec_set any cipher that is already in cbc_set or sha_set (we want critical to cover them)
-  for c,_ in pairs(cbc_set) do nonrec_set[c] = nil end
-  for c,_ in pairs(sha_set) do nonrec_set[c] = nil end
-
-  -- prepare human readable helpers to show protocols per cipher
-  local function proto_list(set)
-    local out = {}
-    for c, protos in pairs(set) do
-      local p = {}
-      for pr,_ in pairs(protos) do table.insert(p, pr) end
-      table.sort(p)
-      table.insert(out, string.format("%s (in: %s)", c, table.concat(p, ", ")))
+  -- remove critical items from nonrec_list
+  local critical_map = {}
+  for _, c in ipairs(cbc_list) do critical_map[c] = true end
+  for _, c in ipairs(sha_list) do critical_map[c] = true end
+  local filtered_nonrec = {}
+  local seen_nr = {}
+  for _, c in ipairs(nonrec_list) do
+    if not critical_map[c] and not seen_nr[c] then
+      table.insert(filtered_nonrec, c)
+      seen_nr[c] = true
     end
-    table.sort(out)
-    return out
   end
 
-  -- emit grouped alerts
-  if next(cbc_set) then
-    table.insert(alerts.critical, "Cipher includes CBC mode: " .. table.concat(proto_list(cbc_set), "; "))
-  end
-  if next(sha_set) then
-    table.insert(alerts.critical, "Cipher uses SHA-1 or legacy SHA: " .. table.concat(proto_list(sha_set), "; "))
-  end
-  if next(nonrec_set) then
-    table.insert(alerts.high, "Unsupported TLS cipher(s) not in recommended list: " .. table.concat(proto_list(nonrec_set), "; "))
+  -- add grouped alerts (use add_alert helper if you have it; else use table.insert(alerts.X,...))
+  local function add_alert(level, msg)
+    if not level or not msg then return end
+    if not alerts[level] then alerts[level] = {} end
+    -- prevent duplicates
+    for _, v in ipairs(alerts[level]) do if v == msg then return end end
+    table.insert(alerts[level], msg)
   end
 
+  if #cbc_list > 0 then
+    add_alert("critical", string.format("Cipher includes CBC mode: %s", table.concat(cbc_list, ", ")))
+  end
+  if #sha_list > 0 then
+    add_alert("critical", string.format("Cipher uses SHA-1 or legacy SHA: %s", table.concat(sha_list, ", ")))
+  end
+  if #filtered_nonrec > 0 then
+    add_alert("high", string.format("Unsupported TLS cipher(s) not in recommended list: %s", table.concat(filtered_nonrec, ", ")))
+  end
 
   -- MEDIUM ALERTS
   
