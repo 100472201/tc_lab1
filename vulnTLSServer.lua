@@ -75,6 +75,16 @@ action = function(host, port)
   end
 
   -- 3. Check for compression support
+  local sock_compress = nmap.new_socket()
+  sock_compress:set_timeout(5000)
+  local status_compress, err_compress = sock_compress:connect(host, port)
+  if status_compress then
+    local status_hello, server_hello = tls.client_hello(sock_compress, nil, nil, { "DEFLATE" })
+    if status_hello and type(server_hello) == "table" and server_hello.compression_method and server_hello.compression_method == "DEFLATE" then
+      table.insert(alerts.critical, "Enable Compression. TLS compression must be disabled to protect against the CRIME vulnerability, which could allow attackers to recover sensitive information such as session cookies.")
+    end
+    sock_compress:close()
+  end
 
 
   -- HIGH ALERTS (3)
