@@ -50,7 +50,8 @@ action = function(host, port)
     low = {}
   }
 
-  host.targetname = tls.servername(host) or host.ip
+  local target_name = host.name or tls.servername(host) or host.targetname or host.ip
+  host.targetname = target_name
 
   local status, cert = sslcert.getCertificate(host, port)
   if ( not(status) ) then
@@ -61,14 +62,25 @@ action = function(host, port)
   -- CRITICAL ALERTS (3)
 
   -- 1. Check for self-signed certificate
-  if stringify_name(cert.subject) == stringify_name(cert.issuer) then
-    local subj = cert.subject.commonName or stringify_name(cert.subject)
-    local issuer = cert.issuer.commonName or stringify_name(cert.issuer)
-    table.insert(alerts.critical, string.format(
-      "Self-Signed Certificate. The certificate is self-signed, as the subject and issuer are identical. Subject: %s; Issuer: %s.",
-      subj, issuer))
+    -- Self-signed check: compare subject/issuer fields key-by-key (robusto contra orden)
+  local function is_self_signed(subject, issuer)
+    local keys = {}
+    for k,_ in pairs(subject or {}) do keys[k] = true end
+    for k,_ in pairs(issuer or {}) do keys[k] = true end
+    for k,_ in pairs(keys) do
+      local s = subject[k] or ""
+      local i = issuer[k] or ""
+      if s ~= i then
+        return false
+      end
+    end
+    return true
   end
 
+  if is_self_signed(cert.subject, cert.issuer) then
+    table.insert(alerts.critical, "Self-Signed Certificate. The certificate is self-signed.")
+  end
+  
   -- 2. Check for SHA-1 signature
   if cert.sig_algorithm and string.find(cert.sig_algorithm:lower(), "sha1") then
     table.insert(alerts.critical, "SHA-1 Signature. The certificate signature uses the deprecated SHA-1 algorithm.")
@@ -135,7 +147,7 @@ action = function(host, port)
   if not has_tls1_2 and not has_tls1_3 and (has_tls1_1 or has_tls1_0) then
     table.insert(alerts.high, "Outdated TLS Support. The server does not support TLS 1.2 or TLS 1.3 but supports older protocols: " .. table.concat(supported_protocols, ", "))
   end
-  
+
   -- 3. Check for cipher suites
   -- Check for weak cipher suites
   local ciphers = port.version and port.version.service_data and port.version.service_data.ciphers
