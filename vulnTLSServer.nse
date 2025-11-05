@@ -117,11 +117,48 @@ action = function(host, port)
   end
 
   -- Check for supported protocols
-  local port_state = nmap.get_port_state(host, port)
-  if port_state and port_state.ssl_tunnel and port_state.ssl_tunnel.version then
-    local version = port_state.ssl_tunnel.version
-    if version == "TLSv1.0" or version == "SSLv3" then
-      table.insert(alerts.high, string.format("Unsupported protocol version: %s.", version))
+  local supported_protocols = {}
+  local protocols_to_check = {"TLSv1.3", "TLSv1.2", "TLSv1.1", "TLSv1.0", "SSLv3"}
+  for _, proto in ipairs(protocols_to_check) do
+    local sock = nmap.new_socket()
+    sock:set_timeout(5000)
+    local status, err = sock:connect(host, port)
+    if status then
+      local status_hello, err_hello = tls.client_hello(sock, proto, nil)
+      if status_hello then
+        table.insert(supported_protocols, proto)
+      end
+      sock:close()
+    end
+  end
+
+  local has_tls1_3 = false
+  local has_tls1_2 = false
+  local has_tls1_1 = false
+  local has_tls1_0 = false
+  local has_sslv3 = false
+
+  for _, proto in ipairs(supported_protocols) do
+    if proto == "TLSv1.3" then has_tls1_3 = true end
+    if proto == "TLSv1.2" then has_tls1_2 = true end
+    if proto == "TLSv1.1" then has_tls1_1 = true end
+    if proto == "TLSv1.0" then has_tls1_0 = true end
+    if proto == "SSLv3" then has_sslv3 = true end
+  end
+
+  if not has_tls1_2 and not has_tls1_3 then
+    if has_tls1_0 or has_sslv3 or has_tls1_1 then
+      table.insert(alerts.high, "Server does not support TLS 1.2 or TLS 1.3, but supports older protocols: " .. table.concat(supported_protocols, ", "))
+    end
+  else -- Server supports TLS 1.2 or 1.3
+    if has_tls1_1 then
+      table.insert(alerts.high, "Server supports TLS 1.1, which is outdated, along with modern protocols.")
+    end
+    if has_tls1_0 then
+      table.insert(alerts.high, "Server supports TLS 1.0, which is outdated, along with modern protocols.")
+    end
+    if has_sslv3 then
+      table.insert(alerts.high, "Server supports SSLv3, which is insecure, along with modern protocols.")
     end
   end
 
