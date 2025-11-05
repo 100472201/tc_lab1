@@ -205,19 +205,6 @@ action = function(host, port)
     table.insert(alerts.medium, string.format("Certificate lifespan is too long: %.0f days (more than 366 days).", lifespan_days))
   end
 
-  local matches_cn = (common_name and host.targetname:match(common_name:gsub("*", ".*")))
-  local matches_san = false
-  for _, san in ipairs(subject_alt_names) do
-    if host.targetname:match(san:gsub("*", ".*")) then
-      matches_san = true
-      break
-    end
-  end
-
-  if not matches_cn and not matches_san then
-    table.insert(alerts.medium, string.format("Domain name mismatch: %s does not match %s or any subject alternative names.", host.targetname, common_name))
-  end
-
   -- 2. Check for domain name mismatch
   local common_name = cert.subject.commonName
   local subject_alt_names = {}
@@ -229,6 +216,19 @@ action = function(host, port)
         end
       end
     end
+  end
+
+  local matches_cn = (common_name and host.targetname:match(common_name:gsub("*", ".*")))
+  local matches_san = false
+  for _, san in ipairs(subject_alt_names) do
+    if host.targetname:match(san:gsub("*", ".*")) then
+      matches_san = true
+      break
+    end
+  end
+
+  if not matches_cn and not matches_san then
+    table.insert(alerts.medium, string.format("Domain name mismatch: %s does not match %s or any subject alternative names.", host.targetname, common_name))
   end
 
   -- LOW ALERTS
