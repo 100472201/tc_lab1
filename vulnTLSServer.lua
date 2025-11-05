@@ -65,30 +65,31 @@ action = function(host, port)
     local subj = cert.subject.commonName or stringify_name(cert.subject)
     local issuer = cert.issuer.commonName or stringify_name(cert.issuer)
     table.insert(alerts.critical, string.format(
-      "Self-signed certificate detected. Subject and issuer are identical. Subject: %s; Issuer: %s.",
+      "Self-Signed Certificate. The certificate is self-signed, as the subject and issuer are identical. Subject: %s; Issuer: %s.",
       subj, issuer))
   end
 
   -- 2. Check for SHA-1 signature
   if cert.sig_algorithm and string.find(cert.sig_algorithm:lower(), "sha1") then
-    table.insert(alerts.critical, "Certificate signature uses SHA-1 (deprecated)")
+    table.insert(alerts.critical, "SHA-1 Signature. The certificate signature uses the deprecated SHA-1 algorithm.")
   end
 
-  -- 3. Check for CBC support
+  -- 3. Check for compression support
+
 
   -- HIGH ALERTS (3)
 
   -- 1. Check for certificate type
   if cert.pubkey.type == "rsa" then
     if cert.pubkey.bits < 2048 then
-      table.insert(alerts.high, string.format("Weak key: %s bits %s.", cert.pubkey.bits, cert.pubkey.type))
+      table.insert(alerts.high, string.format("Weak Key. The certificate's public key is weak: %s bits %s.", cert.pubkey.bits, cert.pubkey.type))
     end
   elseif cert.pubkey.type == "ec" then
     if cert.pubkey.ecdhparams.curve_params.curve ~= "secp256r1" then
-      table.insert(alerts.high, string.format("Weak key: %s curve.", cert.pubkey.ecdhparams.curve_params.curve))
+      table.insert(alerts.high, string.format("Weak Key. The certificate's public key is weak: %s curve.", cert.pubkey.ecdhparams.curve_params.curve))
     end
   else
-    table.insert(alerts.high, string.format("Unsupported key type: %s.", cert.pubkey.type))
+    table.insert(alerts.high, string.format("Unsupported Key Type. The certificate's public key type is not supported: %s.", cert.pubkey.type))
   end
 
   -- 2. Check for supported protocols
@@ -120,14 +121,14 @@ action = function(host, port)
 
   if not has_tls1_2 and not has_tls1_3 then
     if has_tls1_0 or has_tls1_1 then
-      table.insert(alerts.high, "Server does not support TLS 1.2 or TLS 1.3, but supports older protocols: " .. table.concat(supported_protocols, ", "))
+      table.insert(alerts.high, "Outdated TLS Support. The server does not support TLS 1.2 or TLS 1.3, but supports older protocols: " .. table.concat(supported_protocols, ", "))
     end
   else -- Server supports TLS 1.2 or 1.3
     if has_tls1_1 then
-      table.insert(alerts.high, "Server supports TLS 1.1, which is outdated, along with modern protocols.")
+      table.insert(alerts.high, "Outdated TLS Support. The server supports the outdated TLS 1.1 protocol along with modern protocols.")
     end
     if has_tls1_0 then
-      table.insert(alerts.high, "Server supports TLS 1.0, which is outdated, along with modern protocols.")
+      table.insert(alerts.high, "Outdated TLS Support. The server supports the outdated TLS 1.0 protocol along with modern protocols.")
     end
   end
 
@@ -150,11 +151,11 @@ action = function(host, port)
       local cipher_name = cipher.name
       if not allowlist[cipher_name] then
         if string.find(cipher_name, "CBC") then
-          table.insert(alerts.critical, string.format("Weak cipher suite used: %s (uses CBC mode).", cipher_name))
+          table.insert(alerts.critical, string.format("Weak Cipher Suite. The server uses a weak cipher suite: %s (CBC mode).", cipher_name))
         elseif (string.find(cipher_name, "_SHA") or string.find(cipher_name, "_SHA1")) and not string.find(cipher_name, "SHA256") and not string.find(cipher_name, "SHA384") then
-          table.insert(alerts.critical, string.format("Weak cipher suite used: %s (uses SHA-1 hash).", cipher_name))
+          table.insert(alerts.critical, string.format("Weak Cipher Suite. The server uses a weak cipher suite: %s (SHA-1 hash).", cipher_name))
         else
-          table.insert(alerts.high, string.format("Server supports cipher outside allowlist: %s", cipher_name))
+          table.insert(alerts.high, string.format("Cipher Suite Not in Allowlist. The server supports a cipher suite that is not in the allowlist: %s", cipher_name))
         end
       end
     end
@@ -174,7 +175,7 @@ action = function(host, port)
         local status_hello, err_hello = tls.client_hello(sock, nil, {cipher_name})
         if status_hello then
           -- The server accepted the cipher
-          table.insert(alerts.critical, string.format("Server supports weak CBC cipher: %s", cipher_name))
+          table.insert(alerts.critical, string.format("Weak CBC Cipher. The server supports a weak CBC cipher: %s", cipher_name))
           sock:close()
           break -- Stop after finding one
         end
@@ -191,18 +192,18 @@ action = function(host, port)
   local notAfter = os.time(cert.validity.notAfter)
 
   if now < notBefore then
-    table.insert(alerts.high, "Certificate is not yet valid.")
+    table.insert(alerts.high, "Invalid Certificate. The certificate is not yet valid.")
   end
   if now > notAfter then
-    table.insert(alerts.high, "Certificate has expired.")
+    table.insert(alerts.high, "Expired Certificate. The certificate has expired.")
   end
 
   local lifespan_days = (notAfter - notBefore) / (60 * 60 * 24)
   if lifespan_days < 90 then
-    table.insert(alerts.medium, string.format("Certificate lifespan is too short: %.0f days (less than 90 days).", lifespan_days))
+    table.insert(alerts.medium, string.format("Short Certificate Lifespan. The certificate lifespan is too short: %.0f days (less than 90 days).", lifespan_days))
   end
   if lifespan_days > 366 then
-    table.insert(alerts.medium, string.format("Certificate lifespan is too long: %.0f days (more than 366 days).", lifespan_days))
+    table.insert(alerts.medium, string.format("Long Certificate Lifespan. The certificate lifespan is too long: %.0f days (more than 366 days).", lifespan_days))
   end
 
   -- 2. Check for domain name mismatch
@@ -228,7 +229,7 @@ action = function(host, port)
   end
 
   if not matches_cn and not matches_san then
-    table.insert(alerts.medium, string.format("Domain name mismatch: %s does not match %s or any subject alternative names.", host.targetname, common_name))
+    table.insert(alerts.medium, string.format("Domain Name Mismatch. The domain name %s does not match the common name %s or any of the subject alternative names.", host.targetname, common_name))
   end
 
   -- LOW ALERTS
@@ -244,10 +245,10 @@ action = function(host, port)
 
   for _, name in ipairs(names_to_check) do
     if not string.find(name, "%.") then
-      table.insert(alerts.low, string.format("Non-qualified hostname in certificate: %s.", name))
+      table.insert(alerts.low, string.format("Non-Qualified Hostname. The certificate contains a non-qualified hostname: %s.", name))
     end
     if string.match(name, "^%d+.%d+.%d+.%d+$") then
-      table.insert(alerts.low, string.format("IP address found in certificate: %s.", name))
+      table.insert(alerts.low, string.format("IP Address in Certificate. The certificate contains an IP address: %s.", name))
     end
   end
   local output_lines = {}
