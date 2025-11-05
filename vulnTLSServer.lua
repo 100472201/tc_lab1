@@ -146,10 +146,33 @@ action = function(host, port)
   end
 
   -- 3. Check for weak cipher suites
-  local function normalize_cipher(name)
-    return (name or ""):upper():gsub("%-", "_"):gsub("%s+", "")
+    -- =========================
+  -- Autonomous cipher enumeration + robust canonicalization
+  -- Flags CRITICAL for CBC and SHA-1; HIGH for non-recommended suites.
+  -- =========================
+
+  -- Canonicalization: convierte distintos formatos a una misma representación
+  local function canon(name)
+    if not name then return "" end
+    local s = name:upper()
+    s = s:gsub("^TLS_", ""):gsub("^SSL_", "")
+    s = s:gsub("_WITH_", "_")
+    s = s:gsub("%-", "_")
+    s = s:gsub("[^A-Z0-9_]", "")
+    s = s:gsub("__+", "_")
+    return s
   end
 
+  -- Key token used for comparison
+  local function token_key(name)
+    local s = canon(name)
+    -- keep GCM/CHACHA and SHA tokens; remove other noise if necessary
+    -- ensure trailing underscores cleaned
+    s = s:gsub("_$", "")
+    return s
+  end
+
+  -- recommended list (as in the assignment) — keep in human-readable form
   local recommended_ciphers = {
     "ECDHE-ECDSA-AES128-GCM-SHA256",
     "ECDHE-RSA-AES128-GCM-SHA256",
@@ -161,12 +184,37 @@ action = function(host, port)
     "DHE-RSA-AES256-GCM-SHA384",
     "DHE-RSA-CHACHA20-POLY1305"
   }
-  local recommended_lookup = {}
-  for _, c in ipairs(recommended_ciphers) do recommended_lookup[normalize_cipher(c)] = true end
 
-  -- A reasonably broad probe list. Add/remove entries if you want to speed up or broaden detection.
+  -- build canonical lookup for recommended ciphers
+  local recommended_canonical = {}
+  for _, rc in ipairs(recommended_ciphers) do
+    recommended_canonical[token_key(rc)] = true
+  end
+
+  -- robust check if a cipher is recommended (accounts for format differences)
+  local function is_recommended(cipher_name)
+    if not cipher_name then return false end
+    local k = token_key(cipher_name)
+    if recommended_canonical[k] then return true end
+    -- fallback: check if any recommended key is a substring of k or viceversa
+    for rc,_ in pairs(recommended_canonical) do
+      if k:find(rc, 1, true) or rc:find(k, 1, true) then
+        return true
+      end
+    end
+    return false
+  end
+
+  -- helper to add alert with deduplication
+  local function add_alert(level, msg)
+    if not alerts[level] then alerts[level] = {} end
+    for _, v in ipairs(alerts[level]) do if v == msg then return end end
+    table.insert(alerts[level], msg)
+  end
+
+  -- Probe list (tune for performance / completeness). Autonomous (no ssl-enum-ciphers).
   local probe_ciphers = {
-    -- CBC / legacy (we want to catch these as critical)
+    -- legacy / CBC candidates (we want to detect these as CRITICAL)
     "TLS_RSA_WITH_AES_128_CBC_SHA",
     "TLS_RSA_WITH_AES_256_CBC_SHA",
     "TLS_DHE_RSA_WITH_AES_128_CBC_SHA",
@@ -177,79 +225,67 @@ action = function(host, port)
     "TLS_RSA_WITH_CAMELLIA_128_CBC_SHA",
     "TLS_RSA_WITH_CAMELLIA_256_CBC_SHA",
     "TLS_RSA_WITH_SEED_CBC_SHA",
-    -- SHA1-legacy markers (many overlap with CBC above)
-    "TLS_RSA_WITH_AES_128_CBC_SHA",
-    -- Modern / recommended
+    "TLS_RSA_WITH_RC4_128_SHA",
+    -- modern / recommended
     "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
     "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
     "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
     "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
-    "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305",
-    "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305",
+    "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
+    "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
     "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256",
     "TLS_DHE_RSA_WITH_AES_256_GCM_SHA384",
-    "TLS_DHE_RSA_WITH_CHACHA20_POLY1305",
-    -- Other commonly-seen (not recommended)
+    "TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
+    -- additional common variants
     "TLS_RSA_WITH_AES_128_GCM_SHA256",
     "TLS_RSA_WITH_AES_256_GCM_SHA384",
     "TLS_RSA_WITH_AES_128_CBC_SHA256",
-    "TLS_RSA_WITH_AES_256_CBC_SHA256",
-    -- Extra legacy / odd
-    "TLS_RSA_WITH_RC4_128_SHA",
-    "TLS_ECDHE_RSA_WITH_CAMELLIA_128_CBC_SHA256",
-    "TLS_DHE_RSA_WITH_CAMELLIA_128_CBC_SHA",
-    "TLS_DHE_RSA_WITH_CAMELLIA_256_CBC_SHA",
+    "TLS_RSA_WITH_AES_256_CBC_SHA256"
   }
 
-  -- storage for accepted ciphers
-  local accepted = {}
-
-  -- helper to try multiple tls.client_hello call signatures for compatibility
+  -- try multiple call signatures for tls.client_hello to handle NSE variations
   local function try_cipher_probe(host, port, cipher_name, timeout_ms)
-    timeout_ms = timeout_ms or 3000
+    timeout_ms = timeout_ms or 2500
     local sock = nmap.new_socket()
     sock:set_timeout(timeout_ms)
-    local ok_conn, conn_err = sock:connect(host, port)
+    local ok_conn = sock:connect(host, port)
     if not ok_conn then
-      sock:close()
+      pcall(function() sock:close() end)
       return false
     end
 
     local accepted_flag = false
 
-    -- Try signature A: tls.client_hello(sock, nil, {cipher})
+    -- signature variant A
     local succ, res = pcall(function() return tls.client_hello(sock, nil, {cipher_name}) end)
     if succ and res then accepted_flag = true end
 
-    -- Try signature B: tls.client_hello(sock, nil, nil, {cipher})
+    -- variant B
     if not accepted_flag then
       succ, res = pcall(function() return tls.client_hello(sock, nil, nil, {cipher_name}) end)
       if succ and res then accepted_flag = true end
     end
 
-    -- Try signature C: tls.client_hello(sock, cipher) (older variants)
+    -- variant C
     if not accepted_flag then
       succ, res = pcall(function() return tls.client_hello(sock, cipher_name) end)
       if succ and res then accepted_flag = true end
     end
 
-    -- Ensure socket closed
     pcall(function() sock:close() end)
     return accepted_flag
   end
 
-  -- Probe each cipher (parallelizing would be nicer but keep it simple & safe)
+  -- perform probes (sequential; reduce list or increase timeouts as needed)
+  local accepted = {}
   for _, c in ipairs(probe_ciphers) do
     local ok = false
-    -- protect each probe from errors
     local succ, res = pcall(function() return try_cipher_probe(host, port, c, 2000) end)
     if succ and res then ok = true end
-    if ok then
-      accepted[c] = true
-    end
+    if ok then accepted[c] = true end
   end
 
-  -- If we found none, we can still try a smaller focused list of legacy ciphers to force detection
+  -- if none detected, try a short fallback (to avoid false negatives in case of limited lists)
   if next(accepted) == nil then
     local short_probe = {
       "TLS_RSA_WITH_AES_128_CBC_SHA",
@@ -257,32 +293,39 @@ action = function(host, port)
       "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
     }
     for _, c in ipairs(short_probe) do
-      local succ, res = pcall(function() return try_cipher_probe(host, port, c, 2000) end)
+      local succ, res = pcall(function() return try_cipher_probe(host, port, c, 1800) end)
       if succ and res then accepted[c] = true end
     end
   end
 
-  -- Analyze accepted ciphers and create grouped alerts
+  -- Analyze accepted ciphers: group into CBC, SHA-1, and non-recommended sets
   local cbc_list = {}
   local sha_list = {}
   local nonrec_list = {}
+  local seen = {}
 
   for cipher_name, _ in pairs(accepted) do
-    local norm = normalize_cipher(cipher_name)
+    if seen[cipher_name] then goto continue end
+    seen[cipher_name] = true
 
-    -- CBC => CRITICAL
-    if string.find(norm, "CBC") then table.insert(cbc_list, cipher_name) end
+    local k = canon(cipher_name)
 
-    -- SHA-1 or legacy _SHA => CRITICAL
-    if string.find(norm, "SHA1") or (string.find(norm, "_SHA") and
-       not (string.find(norm, "SHA256") or string.find(norm, "SHA384") or string.find(norm, "SHA512") or string.find(norm, "SHA224"))) then
+    -- CRITICAL: CBC mode
+    if k:find("CBC", 1, true) then
+      table.insert(cbc_list, cipher_name)
+    end
+
+    -- CRITICAL: SHA-1 / legacy `_SHA` (treat `_SHA` without SHA256/SHA384 as SHA-1)
+    if k:find("SHA1", 1, true) or (k:find("_SHA", 1, true) and not (k:find("SHA256", 1, true) or k:find("SHA384", 1, true) or k:find("SHA512", 1, true) or k:find("SHA224", 1, true))) then
       table.insert(sha_list, cipher_name)
     end
 
-    -- HIGH if not in recommended list (but we will remove those already counted as critical later)
-    if not recommended_lookup[norm] then
+    -- HIGH: not in recommended (we'll remove those already critical later)
+    if not is_recommended(cipher_name) then
       table.insert(nonrec_list, cipher_name)
     end
+
+    ::continue::
   end
 
   -- remove critical items from nonrec_list
@@ -298,23 +341,15 @@ action = function(host, port)
     end
   end
 
-  -- add grouped alerts (use add_alert helper if you have it; else use table.insert(alerts.X,...))
-  local function add_alert(level, msg)
-    if not level or not msg then return end
-    if not alerts[level] then alerts[level] = {} end
-    -- prevent duplicates
-    for _, v in ipairs(alerts[level]) do if v == msg then return end end
-    table.insert(alerts[level], msg)
-  end
-
+  -- Emit grouped alerts (compact, deduplicated)
   if #cbc_list > 0 then
-    add_alert("critical", string.format("Cipher includes CBC mode: %s", table.concat(cbc_list, ", ")))
+    add_alert("critical", "Cipher includes CBC mode: " .. table.concat(cbc_list, ", "))
   end
   if #sha_list > 0 then
-    add_alert("critical", string.format("Cipher uses SHA-1 or legacy SHA: %s", table.concat(sha_list, ", ")))
+    add_alert("critical", "Cipher uses SHA-1 or legacy SHA: " .. table.concat(sha_list, ", "))
   end
   if #filtered_nonrec > 0 then
-    add_alert("high", string.format("Unsupported TLS cipher(s) not in recommended list: %s", table.concat(filtered_nonrec, ", ")))
+    add_alert("high", "Unsupported TLS cipher(s) not in recommended list: " .. table.concat(filtered_nonrec, ", "))
   end
 
   -- MEDIUM ALERTS
