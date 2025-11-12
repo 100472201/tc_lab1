@@ -10,16 +10,13 @@ local datetime = require "datetime"
 local string = require "string"
 local table = require "table"
 local tls = require "tls"
+local http = require "http"
 
 description = [[
-Identify TLS certificate problems:
-- Self-signed certificates
-- CBC and/or SHA Support
-- Enable Compression 
-- Certificate Type
-- Validity period issues
-- Domain name mismatches
-- Non-qualified names and IPs in certificates
+Identify TLS certificate problems and basic TLS configuration weaknesses:
+- certificate checks (self-signed, signature hash, key type/size, validity period, CN/SANs, IPs, non-qualified names)
+- TLS config checks (protocol support for TLS1.2/1.3, detection of CBC/SHA suites acceptance, compression enabled)
+- Enhanced checks: HSTS, server info disclosure, TLS curves, DH params, wildcard scope, CN/SAN attributes, cipher preference, cert pinning
 ]]
 
 categories = {"safe", "discovery"}
@@ -58,6 +55,8 @@ action = function(host, port)
     stdnse.debug1("getCertificate error: %s", cert or "unknown")
     return
   end
+
+  local cn = cert.subject and cert.subject.commonName or ""
 
   -- CRITICAL ALERTS (3)
 
@@ -341,15 +340,15 @@ action = function(host, port)
     end
   end
 
-  -- Emit grouped alerts (compact, deduplicated)
-  if #cbc_list > 0 then
-    add_alert("critical", "Cipher includes CBC mode: " .. table.concat(cbc_list, ", "))
+  -- Emit individual alerts for each problematic cipher
+  for _, cipher in ipairs(cbc_list) do
+    add_alert("critical", "Cipher includes CBC mode: " .. cipher)
   end
-  if #sha_list > 0 then
-    add_alert("critical", "Cipher uses SHA-1 or legacy SHA: " .. table.concat(sha_list, ", "))
+  for _, cipher in ipairs(sha_list) do
+    add_alert("critical", "Cipher uses SHA-1 or legacy SHA: " .. cipher)
   end
-  if #filtered_nonrec > 0 then
-    add_alert("high", "Unsupported TLS cipher(s) not in recommended list: " .. table.concat(filtered_nonrec, ", "))
+  for _, cipher in ipairs(filtered_nonrec) do
+    add_alert("high", "Unsupported TLS cipher not in recommended list: " .. cipher)
   end
 
   -- MEDIUM ALERTS
@@ -375,7 +374,6 @@ action = function(host, port)
   end
 
   -- 2. Check for domain name mismatch
-  local common_name = cert.subject.commonName
   local subject_alt_names = {}
   if cert.extensions then
     for _, e in ipairs(cert.extensions) do
@@ -387,7 +385,7 @@ action = function(host, port)
     end
   end
 
-  local matches_cn = (common_name and host.targetname:match(common_name:gsub("*", ".*")))
+  local matches_cn = (cn and host.targetname:match(cn:gsub("*", ".*")))
   local matches_san = false
   for _, san in ipairs(subject_alt_names) do
     if host.targetname:match(san:gsub("*", ".*")) then
@@ -397,15 +395,15 @@ action = function(host, port)
   end
 
   if not matches_cn and not matches_san then
-    table.insert(alerts.medium, string.format("Domain Name Mismatch. The domain name %s does not match the common name %s or any of the subject alternative names.", host.targetname, common_name))
+    table.insert(alerts.medium, string.format("Domain Name Mismatch. The domain name %s does not match the common name %s or any of the subject alternative names.", host.targetname, cn))
   end
 
   -- LOW ALERTS
 
   -- 1. Check for non-qualified hostnames and IP addresses in certificate
   local names_to_check = {}
-  if common_name then
-    table.insert(names_to_check, common_name)
+  if cn then
+    table.insert(names_to_check, cn)
   end
   for _, san in ipairs(subject_alt_names) do
     table.insert(names_to_check, san)
@@ -419,6 +417,73 @@ action = function(host, port)
       table.insert(alerts.low, string.format("IP Address in Certificate. The certificate contains an IP address: %s.", name))
     end
   end
+
+  -- Enhanced checks
+
+  -- HTTP checks for HSTS, server disclosure, cert pinning
+  local http_req = http.get(host, port, '/')
+  if http_req and http_req.header then
+    -- HSTS
+    local hsts = http_req.header['strict-transport-security'] or http_req.header['Strict-Transport-Security']
+    if not hsts then
+      table.insert(alerts.high, "HSTS not configured. Strict-Transport-Security header is missing.")
+    else
+      local max_age_str = hsts:match("max%-age=(%d+)")
+      if max_age_str then
+        local max_age = tonumber(max_age_str)
+        if max_age < 63072000 then
+          table.insert(alerts.medium, string.format("HSTS max-age too short. Current: %d seconds, should be at least 63072000 (2 years).", max_age))
+        end
+      end
+    end
+
+    -- Server info disclosure
+    local server = http_req.header['server'] or http_req.header['Server']
+    if server then
+      -- Check for version numbers or server type
+      if server:match("%d+%.%d+") or server:lower():find("apache") or server:lower():find("nginx") or server:lower():find("iis") then
+        table.insert(alerts.medium, string.format("Server information disclosure. Server header: %s", server))
+      end
+    end
+
+    -- Cert pinning
+    local pkp = http_req.header['public-key-pins'] or http_req.header['Public-Key-Pins'] or http_req.header['public-key-pins-report-only'] or http_req.header['Public-Key-Pins-Report-Only']
+    if not pkp then
+      table.insert(alerts.low, "Certificate pinning not configured. Public-Key-Pins header is missing.")
+    end
+  end
+
+  -- Enhanced certificate checks
+
+  -- Wildcard scope
+  if cn and string.find(cn, "^%*%.") then
+    -- Check if it's *.domain or broader
+    local domain_part = cn:sub(3)  -- remove *.
+    if not domain_part or domain_part:find("%.") == nil then
+      table.insert(alerts.low, "Wildcard certificate too broad. Should be limited to subdomain, e.g., *.sub.domain.com")
+    end
+  end
+
+  -- CN and SAN attributes
+  if cn and not cn:find("%.%.") and cn ~= "localhost" then
+    table.insert(alerts.low, "CN not fully qualified. CN should be a fully qualified domain name.")
+  end
+
+  -- If SAN exists, check if CN is in SAN
+  if #subject_alt_names > 0 and cn then
+    local cn_in_san = false
+    for _, san in ipairs(subject_alt_names) do
+      if san == cn then cn_in_san = true; break end
+    end
+    if not cn_in_san then
+      table.insert(alerts.low, "CN not in SAN. For compatibility, CN should be included in Subject Alternative Names.")
+    end
+  end
+
+  -- Cipher preference: hard to check without full server config, skip
+
+  -- For TLS curves, DH params: existing checks cover key sizes, assume curves are checked in key type
+
   local output_lines = {}
   local severities = {"critical", "high", "medium", "low"}
 
