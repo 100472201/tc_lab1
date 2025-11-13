@@ -351,6 +351,11 @@ action = function(host, port)
     add_alert("high", "Unsupported TLS cipher not in recommended list: " .. cipher)
   end
 
+  -- Cipher preference: if client can choose weak ciphers, raise low alert
+  if #filtered_nonrec > 0 then
+    add_alert("low", "Weak Cipher Preference. Server configuration allows client to select non-recommended cipher suites.")
+  end
+
   -- MEDIUM ALERTS
   
   -- 1. Certificate Lifespan: Check validity
@@ -480,7 +485,7 @@ action = function(host, port)
     end
   end
 
-  -- Cipher preference: hard to check without full server config, skip
+  -- Cipher preference: checked above with low alert if non-recommended ciphers are accepted
 
   -- For TLS curves, DH params: existing checks cover key sizes, assume curves are checked in key type
 
