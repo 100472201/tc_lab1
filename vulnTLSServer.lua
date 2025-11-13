@@ -348,7 +348,7 @@ action = function(host, port)
     add_alert("critical", "Cipher uses SHA-1 or legacy SHA: " .. cipher)
   end
   for _, cipher in ipairs(filtered_nonrec) do
-    add_alert("high", "Unsupported TLS cipher not in recommended list: " .. cipher)
+    add_alert("high", "Unsupported cipher: " .. cipher)
   end
 
   -- Cipher preference: if client can choose weak ciphers, raise low alert
