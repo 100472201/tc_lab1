@@ -481,7 +481,7 @@ action = function(host, port)
       if san == cn then cn_in_san = true; break end
     end
     if not cn_in_san then
-      table.insert(alerts.low, "CN not in SAN. For compatibility, CN should be included in Subject Alternative Names.")
+      table.insert(alerts.low, string.format("CN '%s' not in SAN. SAN contains: %s. For compatibility, CN should be included in Subject Alternative Names.", cn, table.concat(subject_alt_names, ", ")))
     end
   end
 
