@@ -411,7 +411,7 @@ action = function(host, port)
   end
 
   if not matches_cn and not matches_san then
-    table.insert(alerts.medium, string.format("Domain Name Mismatch. The domain name %s does not match the common name %s or any of the subject alternative names.", host.targetname, cn))
+    table.insert(alerts.medium, string.format("Domain mismatch: %s does not match CN %s or SAN (%s).", host.targetname, cn, table.concat(subject_alt_names, ", ")))
   end
 
   -- LOW ALERTS
