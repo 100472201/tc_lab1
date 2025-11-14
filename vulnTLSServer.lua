@@ -173,14 +173,14 @@ action = function(host, port)
 
   -- recommended list (as in the assignment) — keep in human-readable form
   local recommended_ciphers = {
-    "ECDHE-ECDSA-AES128-GCM-SHA256",
-    "ECDHE-RSA-AES128-GCM-SHA256",
-    "ECDHE-ECDSA-AES256-GCM-SHA384",
-    "ECDHE-RSA-AES256-GCM-SHA384",
+    "ECDHE-ECDSA-AES_128-GCM-SHA256",
+    "ECDHE-RSA-AES_128-GCM-SHA256",
+    "ECDHE-ECDSA-AES_256-GCM-SHA384",
+    "ECDHE-RSA-AES_256-GCM-SHA384",
     "ECDHE-ECDSA-CHACHA20-POLY1305",
     "ECDHE-RSA-CHACHA20-POLY1305",
-    "DHE-RSA-AES128-GCM-SHA256",
-    "DHE-RSA-AES256-GCM-SHA384",
+    "DHE-RSA-AES_128-GCM-SHA256",
+    "DHE-RSA-AES_256-GCM-SHA384",
     "DHE-RSA-CHACHA20-POLY1305"
   }
 
@@ -300,6 +300,7 @@ action = function(host, port)
   -- Analyze accepted ciphers: group into CBC, SHA-1, and non-recommended sets
   local cbc_list = {}
   local sha_list = {}
+  local both_list = {}
   local nonrec_list = {}
   local seen = {}
 
@@ -309,13 +310,14 @@ action = function(host, port)
 
     local k = canon(cipher_name)
 
-    -- CRITICAL: CBC mode
-    if k:find("CBC", 1, true) then
-      table.insert(cbc_list, cipher_name)
-    end
+    local has_cbc = k:find("CBC", 1, true)
+    local has_sha = k:find("SHA1", 1, true) or (k:find("_SHA", 1, true) and not (k:find("SHA256", 1, true) or k:find("SHA384", 1, true) or k:find("SHA512", 1, true) or k:find("SHA224", 1, true)))
 
-    -- CRITICAL: SHA-1 / legacy `_SHA` (treat `_SHA` without SHA256/SHA384 as SHA-1)
-    if k:find("SHA1", 1, true) or (k:find("_SHA", 1, true) and not (k:find("SHA256", 1, true) or k:find("SHA384", 1, true) or k:find("SHA512", 1, true) or k:find("SHA224", 1, true))) then
+    if has_cbc and has_sha then
+      table.insert(both_list, cipher_name)
+    elseif has_cbc then
+      table.insert(cbc_list, cipher_name)
+    elseif has_sha then
       table.insert(sha_list, cipher_name)
     end
 
@@ -331,6 +333,7 @@ action = function(host, port)
   local critical_map = {}
   for _, c in ipairs(cbc_list) do critical_map[c] = true end
   for _, c in ipairs(sha_list) do critical_map[c] = true end
+  for _, c in ipairs(both_list) do critical_map[c] = true end
   local filtered_nonrec = {}
   local seen_nr = {}
   for _, c in ipairs(nonrec_list) do
@@ -346,6 +349,9 @@ action = function(host, port)
   end
   for _, cipher in ipairs(sha_list) do
     add_alert("critical", "Cipher uses SHA-1 or legacy SHA: " .. cipher)
+  end
+  for _, cipher in ipairs(both_list) do
+    add_alert("critical", "Cipher includes CBC mode and uses SHA-1 or legacy SHA: " .. cipher)
   end
   for _, cipher in ipairs(filtered_nonrec) do
     add_alert("high", "Unsupported cipher: " .. cipher)
