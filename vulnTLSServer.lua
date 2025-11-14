@@ -369,8 +369,10 @@ action = function(host, port)
   
   -- 1. Certificate Lifespan: Check validity
   local now = os.time()
-  local notBefore = os.time(cert.validity.notBefore)
-  local notAfter = os.time(cert.validity.notAfter)
+  -- Certificate validity times are in UTC, so adjust for timezone offset
+  local offset = - os.difftime(os.time(), os.time(os.date("!*t")))
+  local notBefore = os.time(cert.validity.notBefore) - offset
+  local notAfter = os.time(cert.validity.notAfter) - offset
 
   if now < notBefore then
     table.insert(alerts.high, "Invalid Certificate. The certificate is not yet valid.")
