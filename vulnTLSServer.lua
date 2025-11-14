@@ -139,9 +139,12 @@ action = function(host, port)
     if proto == "TLSv1.0" then has_tls1_0 = true end
   end
 
-    -- Raise HIGH only if server does NOT support TLS 1.2/1.3 but DOES support older versions.
-  if not has_tls1_2 and not has_tls1_3 and (has_tls1_1 or has_tls1_0) then
-    table.insert(alerts.high, "Outdated TLS Support. The server does not support TLS 1.2 or TLS 1.3 but supports older protocols: " .. table.concat(supported_protocols, ", "))
+    -- Raise HIGH if server supports outdated protocols (TLS 1.0/1.1), even if modern ones are available, due to downgrade attack risks
+  if has_tls1_0 then
+    table.insert(alerts.high, "TLS 1.0 supported. Vulnerable to downgrade attacks.")
+  end
+  if has_tls1_1 then
+    table.insert(alerts.high, "TLS 1.1 supported. Vulnerable to downgrade attacks.")
   end
 
   -- 3. Check for weak cipher suites
