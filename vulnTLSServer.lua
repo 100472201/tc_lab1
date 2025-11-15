@@ -39,6 +39,50 @@ function stringify_name(name)
   return table.concat(fields, "/")
 end
 
+-- Helper function to extract signature algorithm
+local function get_sig_alg(cert)
+  if not cert then return nil end
+  local direct = {
+    "sig_algorithm","sig_alg","signature_algorithm","signatureAlgorithm",
+    "signature_algo","sig_alg_name","sigAlgorithm"
+  }
+  for _,k in ipairs(direct) do
+    local v = cert[k]
+    if type(v)=="string" and #v>0 then return v end
+  end
+  for _,k in ipairs({"sig","signature","Signature"}) do
+    local t = cert[k]
+    if type(t)=="table" then
+      for _,kk in ipairs({"algorithm","alg","name","oid","oid_name","oidName"}) do
+        local v = t[kk]
+        if type(v)=="string" and #v>0 then return v end
+      end
+    end
+  end
+  return nil
+end
+
+-- Function to check if certificate signature is SHA-1
+local function cert_signature_is_sha1(cert)
+  local alg = get_sig_alg(cert)
+  if type(alg)=="string" and alg:lower():find("sha1",1,true) then return true end
+  local needles = { "1%.2%.840%.113549%.1%.1%.5", "1%.3%.14%.3%.2%.29" }
+  for _,k in ipairs({"sig","signature","Signature"}) do
+    local t = cert and cert[k]
+    if type(t)=="table" then
+      for _,kk in ipairs({"oid","algorithm","alg","name","oid_name","oidName"}) do
+        local v = t[kk]
+        if type(v)=="string" then
+          local s = v:lower()
+          if s:find("sha1",1,true) then return true end
+          for _,pat in ipairs(needles) do if v:find(pat) then return true end end
+        end
+      end
+    end
+  end
+  return false
+end
+
 action = function(host, port)
   local alerts = {
     critical = {},
@@ -46,6 +90,13 @@ action = function(host, port)
     medium = {},
     low = {}
   }
+
+  -- helper to add alert with deduplication
+  local function add_alert(level, msg)
+    if not alerts[level] then alerts[level] = {} end
+    for _, v in ipairs(alerts[level]) do if v == msg then return end end
+    table.insert(alerts[level], msg)
+  end
 
   local target_name = host.name or tls.servername(host) or host.targetname or host.ip
   host.targetname = target_name
@@ -55,6 +106,7 @@ action = function(host, port)
     stdnse.debug1("getCertificate error: %s", cert or "unknown")
     return
   end
+  stdnse.debug1("vulnTLSServer: cert signature algorithm=%s", tostring(get_sig_alg(cert)))
 
   local cn = cert.subject and cert.subject.commonName or ""
 
@@ -108,6 +160,11 @@ action = function(host, port)
     end
   else
     table.insert(alerts.high, string.format("Unsupported Key Type. The certificate's public key type is not supported: %s.", cert.pubkey.type))
+  end
+
+  -- SHA-1 certificate signature (HIGH)
+  if cert and cert_signature_is_sha1(cert) then
+    add_alert("critical", "Certificate signature uses SHA-1 (deprecated)")
   end
 
   -- 2. Check for supported protocols
@@ -205,13 +262,6 @@ action = function(host, port)
       end
     end
     return false
-  end
-
-  -- helper to add alert with deduplication
-  local function add_alert(level, msg)
-    if not alerts[level] then alerts[level] = {} end
-    for _, v in ipairs(alerts[level]) do if v == msg then return end end
-    table.insert(alerts[level], msg)
   end
 
   -- Probe list (tune for performance / completeness). Autonomous (no ssl-enum-ciphers).
