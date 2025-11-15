@@ -1,0 +1,14 @@
+Description: Test against a baseline secure Apache configuration (port 443).
+This test uses a "good" certificate (SHA-256, 365 days, matching SAN) and
+strong server settings (TLS 1.2+ only, modern ciphers).
+
+Input:
+-p 443
+--script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse
+localhost
+
+Output: The script should report minimal alerts.
+- Expected: 'Self-Signed Certificate' (unavoidable) and informational alerts like HSTS/Pinning.
+- NOT Expected: No alerts for protocols, ciphers, lifespan, or domain mismatch should appear. This test validates the absence of false positives.
+
+Command: nmap -p 443 --script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse localhost

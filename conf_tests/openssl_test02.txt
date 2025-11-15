@@ -1,0 +1,20 @@
+# Corrected commands to generate a certificate with multiple vulnerabilities for Test 02
+# This creates an expired, weak key, SHA-1 signed, wildcard certificate with SAN
+
+# Generate weak private key (1024 bits)
+sudo openssl genrsa -out test02_bad_key.pem 1024
+
+# Create extensions file for SAN
+echo "subjectAltName = DNS:*.localhost" | sudo tee ext.cnf > /dev/null
+
+# Generate certificate signing request (CSR) with wildcard CN
+sudo openssl req -new -key test02_bad_key.pem -out test02.csr -subj "/CN=*.localhost"
+
+# Sign the certificate with SHA-1, expired (days 0 makes it expired immediately), and include SAN from ext file
+sudo openssl x509 -req -in test02.csr -signkey test02_bad_key.pem -out test02_bad_cert.pem -sha1 -days 0 -extfile ext.cnf
+
+# Combine key and cert into PEM file
+sudo cat test02_bad_key.pem test02_bad_cert.pem > test02.pem
+
+# Clean up CSR and ext file if not needed
+sudo rm test02.csr ext.cnf

@@ -1,0 +1,33 @@
+Description: Test of the script against a fully vulnerable "Bad Server" configuration (Test 02).
+This test combines a custom "bad" certificate (generated via openssl_test02.txt) and a weak server configuration (default-ssl-test02.conf).
+
+The certificate was intentionally created with:
+- A weak 1024-bit RSA key.
+- A SHA-1 signature.
+- 0-day lifespan (Expired).
+- A wildcard Common Name (CN).
+
+The server was configured to:
+- Allow weak protocols (TLS 1.0, TLS 1.1).
+- Offer multiple weak cipher suites (CBC/SHA1).
+
+Input:
+-p 443
+--script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse
+localhost
+
+Output: The script is expected to detect all vulnerabilities configured.
+- Certificate Alerts (HIGH):
+  - 'Weak Key. ... 1024 bits rsa' 
+  - 'Expired Certificate' 
+- Server Alerts (HIGH):
+  - 'TLS 1.0 supported' [cite: 75]
+  - 'TLS 1.1 supported' [cite: 75]
+- Cipher Alerts (CRITICAL):
+  - Multiple 'Cipher includes CBC mode' and 'Cipher uses SHA-1' alerts [cite: 63-73].
+  - 'Certificate signature uses SHA-1 (deprecated)' 
+- Other Alerts:
+  - 'Wildcard certificate detected'[cite: 80].
+  - Note: The script incorrectly flags a 'Domain mismatch'[cite: 78], revealing a remaining bug in the script's wildcard handling logic.
+
+Command: nmap -p 443 --script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse localhost
