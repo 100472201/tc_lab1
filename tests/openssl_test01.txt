@@ -1,0 +1,8 @@
+sudo openssl req -new -x509 \
+  -newkey rsa:2048 \
+  -keyout test01_good_key.pem \
+  -out test01_good_cert.pem \
+  -days 365 \
+  -nodes \
+  -subj "/CN=localhost" \
+  -addext "subjectAltName=DNS:localhost"
