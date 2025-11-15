@@ -204,6 +204,43 @@ action = function(host, port)
     table.insert(alerts.high, "TLS 1.1 supported. Vulnerable to downgrade attacks.")
   end
 
+  -- =========================
+  -- TLS Curves Check
+  -- =========================
+  -- Recommended curves
+  local recommended_curves = {
+      ["X25519"] = true,
+      ["prime256v1"] = true,
+      ["secp384r1"] = true
+  }
+
+  -- List of curves to test (puedes añadir más si quieres)
+  local tls_curves_to_test = {"X25519", "prime256v1", "secp384r1", "secp521r1", "secp224r1"}
+  local supported_curves = {}
+
+  for _, curve in ipairs(tls_curves_to_test) do
+      local sock = nmap.new_socket()
+      sock:set_timeout(3000)
+      local ok = sock:connect(host, port)
+      if ok then
+          local status, server_hello = tls.client_hello(sock, nil, nil, nil, {curve})
+          if status and server_hello and server_hello.selected_group == curve then
+              table.insert(supported_curves, curve)
+          end
+      end
+      sock:close()
+  end
+
+  -- check if the curves are unssupported
+  for _, curve in ipairs(supported_curves) do
+      if not recommended_curves[curve] then
+          table.insert(alerts.high, string.format(
+              "Unsupported TLS curve: %s. Recommended curves are X25519, prime256v1, secp384r1.", 
+              curve
+          ))
+      end
+  end
+
   -- 3. Check for weak cipher suites
     -- =========================
   -- Autonomous cipher enumeration + robust canonicalization
