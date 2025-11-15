@@ -612,13 +612,18 @@ action = function(host, port)
 
   -- Enhanced certificate checks
 
-  -- Wildcard scope
+  -- Wildcard scope: alert for any wildcard in CN or SAN
+  local wildcard_names = {}
   if cn and string.find(cn, "^%*%.") then
-    -- Check if it's *.domain or broader
-    local domain_part = cn:sub(3)  -- remove *.
-    if not domain_part or domain_part:find("%.") == nil then
-      table.insert(alerts.low, "Wildcard certificate too broad. Should be limited to subdomain, e.g., *.sub.domain.com")
+    table.insert(wildcard_names, "CN: " .. cn)
+  end
+  for _, san in ipairs(subject_alt_names) do
+    if string.find(san, "^%*%.") then
+      table.insert(wildcard_names, "SAN: " .. san)
     end
+  end
+  if #wildcard_names > 0 then
+    table.insert(alerts.low, "Wildcard certificate detected: " .. table.concat(wildcard_names, ", "))
   end
 
   -- CN and SAN attributes
