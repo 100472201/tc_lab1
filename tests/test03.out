@@ -1,0 +1,23 @@
+# Nmap 7.91 scan initiated Sat Nov 15 15:05:27 2025 as: nmap -p 443 --script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse localhost
+Nmap scan report for localhost (127.0.0.1)
+Host is up (0.000089s latency).
+Other addresses for localhost (not scanned): ::1
+
+PORT    STATE SERVICE
+443/tcp open  https
+| vulnTLSServer: **********************
+| CRITICAL ALERTS: 1
+| **********************
+| - Self-Signed Certificate. The certificate is self-signed.
+| **********************
+| **********************
+| HIGH ALERTS: 1
+| **********************
+| - TLS 1.0 supported. Vulnerable to downgrade attacks.
+| **********************
+| **********************
+| LOW ALERTS: 2
+| **********************
+| - Certificate pinning not configured. Public-Key-Pins header is missing.
+| - CN not fully qualified. CN should be a fully qualified domain name.
+| **********************

@@ -1,0 +1,13 @@
+Description: Test against expired certificate (Test 05).
+This test uses an expired certificate (generated via openssl_test05.txt) with default server configuration (default-ssl-test05.conf).
+
+Input:
+-p 8443
+--script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse
+localhost
+
+Output: The script should detect the expired certificate.
+- Expected: 'Expired Certificate. The certificate has expired.' (HIGH), 'Short Certificate Lifespan. The certificate lifespan is too short: 0 days (less than 90 days).' (MEDIUM)
+- Other: 'Self-Signed Certificate' (CRITICAL), and possible server info alerts.
+
+Command: nmap -p 8443 --script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse localhost
