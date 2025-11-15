@@ -83,6 +83,52 @@ local function cert_signature_is_sha1(cert)
   return false
 end
 
+-- Function to get DH params by performing a handshake with DHE cipher
+local function get_dh_params(host, port)
+  local sock = nmap.new_socket()
+  sock:set_timeout(5000)
+  local ok = sock:connect(host, port)
+  if not ok then return false end
+
+  -- Send client hello with DHE cipher
+  local t = {
+    protocol = "TLSv1.2",
+    ciphers = {"TLS_DHE_RSA_WITH_AES_128_CBC_SHA"},
+    extensions = {
+      server_name = tls.servername(host) and tls.EXTENSION_HELPERS["server_name"](tls.servername(host)),
+    }
+  }
+  local status, records = tls.client_hello(sock, t)
+  if not status then sock:close() return false end
+
+  -- Read server hello and key exchange
+  local buffer = ""
+  local i = 1
+  local record
+  i, record = tls.record_read(buffer, i)
+  if not record or record.type ~= "handshake" then sock:close() return false end
+
+  -- Parse server key exchange for DH params
+  if record.body and record.body.type == "server_key_exchange" then
+    local data = record.body.data
+    if data then
+      -- Parse DH params: p length (2 bytes), p, g length (2), g, y length (2), y
+      local pos = 1
+      local p_len = string.unpack(">I2", data, pos) pos = pos + 2
+      local p = data:sub(pos, pos + p_len - 1) pos = pos + p_len
+      local g_len = string.unpack(">I2", data, pos) pos = pos + 2
+      local g = data:sub(pos, pos + g_len - 1) pos = pos + g_len
+      -- y is public key, not needed for size
+      local dh_size = #p * 8
+      sock:close()
+      return true, {size = dh_size}
+    end
+  end
+
+  sock:close()
+  return false
+end
+
 action = function(host, port)
   local alerts = {
     critical = {},
@@ -110,7 +156,7 @@ action = function(host, port)
 
   local cn = cert.subject and cert.subject.commonName or ""
 
-  -- CRITICAL ALERTS (3)
+  -- CRITICAL ALERTS
 
   -- 1. Check for self-signed certificate
     -- Self-signed check: compare subject/issuer fields key-by-key (robusto contra orden)
@@ -147,7 +193,7 @@ action = function(host, port)
   end
 
 
-  -- HIGH ALERTS (3)
+  -- HIGH ALERTS
 
   -- 1. Check for certificate type
   if cert.pubkey.type == "rsa" then
@@ -162,12 +208,12 @@ action = function(host, port)
     table.insert(alerts.high, string.format("Unsupported Key Type. The certificate's public key type is not supported: %s.", cert.pubkey.type))
   end
 
-  -- SHA-1 certificate signature (HIGH)
+  -- 2. SHA-1 certificate signature
   if cert and cert_signature_is_sha1(cert) then
     add_alert("critical", "Certificate signature uses SHA-1 (deprecated)")
   end
 
-  -- 2. Check for supported protocols
+  -- 3. Check for supported protocols
   local supported_protocols = {}
   local protocols_to_check = {"TLSv1.3", "TLSv1.2", "TLSv1.1", "TLSv1.0"}
   for _, proto in ipairs(protocols_to_check) do
@@ -214,7 +260,7 @@ action = function(host, port)
       ["secp384r1"] = true
   }
 
-  -- List of curves to test (puedes añadir más si quieres)
+  -- List of curves to test
   local tls_curves_to_test = {"X25519", "prime256v1", "secp384r1", "secp521r1", "secp224r1"}
   local supported_curves = {}
 
@@ -231,7 +277,7 @@ action = function(host, port)
       sock:close()
   end
 
-  -- check if the curves are unssupported
+  -- check if the curves are unsupported
   for _, curve in ipairs(supported_curves) do
       if not recommended_curves[curve] then
           table.insert(alerts.high, string.format(
@@ -241,13 +287,21 @@ action = function(host, port)
       end
   end
 
-  -- 3. Check for weak cipher suites
+  -- 5. Check DH parameter size
+  local status_dh, dh_params = get_dh_params(host, port)
+  if status_dh and dh_params and dh_params.size then
+    if dh_params.size < 2048 then
+      table.insert(alerts.high, string.format("Weak DH Parameter Size. DH parameters are %d bits, should be at least 2048 bits for TLS 1.2/1.3.", dh_params.size))
+    end
+  end
+
+  -- 6. Check for weak cipher suites
     -- =========================
   -- Autonomous cipher enumeration + robust canonicalization
   -- Flags CRITICAL for CBC and SHA-1; HIGH for non-recommended suites.
   -- =========================
 
-  -- Canonicalization: convierte distintos formatos a una misma representación
+  -- Canonicalization: converts different formats to the same representation
   local function canon(name)
     if not name then return "" end
     local s = name:upper()
@@ -585,7 +639,7 @@ action = function(host, port)
 
   -- Cipher preference: checked above with low alert if non-recommended ciphers are accepted
 
-  -- For TLS curves, DH params: existing checks cover key sizes, assume curves are checked in key type
+  -- TLS curves and DH params checks added above
 
   local output_lines = {}
   local severities = {"critical", "high", "medium", "low"}
