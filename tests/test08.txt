@@ -1,0 +1,18 @@
+Description: Test for detection of weak/unsupported TLS curves (key exchange).
+This test uses the "super-weak server" configuration (TLS 1.0+, 'ALL' ciphers)
+and a standard RSA certificate. The key change is in the Apache config,
+which uses 'SSLOpenSSLConfCmd Curves' to force the server to offer a
+non-recommended curve ('secp224r1') during the ECDHE handshake.
+
+Input:
+-p 443
+--script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse
+localhost
+
+Output: The script is expected to detect all server-side and certificate-side weaknesses.
+- Server Alerts (Correct): 'TLS 1.0 supported', 'TLS 1.1 supported', and all 'CBC/SHA' cipher alerts.
+- Certificate Alerts (Correct): 'Self-Signed Certificate'.
+- Curve Alert (The Test Objective):
+  - 'Unsupported TLS curve: secp224r1' (HIGH)
+
+Command: nmap -p 443 --script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse localhost

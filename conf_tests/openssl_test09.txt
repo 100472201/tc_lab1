@@ -1,0 +1,11 @@
+# Generate weak private key (1024 bits RSA)
+sudo openssl genrsa -out cert_test09_weakkey.key 1024
+
+# Generate certificate signing request (CSR)
+sudo openssl req -new -key cert_test09_weakkey.key -out cert_test09.csr -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost"
+
+# Sign the certificate (valid from now)
+sudo openssl x509 -req -in cert_test09.csr -signkey cert_test09_weakkey.key -out cert_test09_weakkey.pem -days 365
+
+# Clean up CSR
+sudo rm cert_test09.csr
