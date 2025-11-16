@@ -1,0 +1,13 @@
+Description: Test for detection of weak certificate keys.
+This test uses a certificate with a weak 1024-bit RSA key, which should trigger the "Weak Key" alert.
+
+Input:
+-p 443
+--script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse
+localhost
+
+Output: The script should detect the weak key.
+- Expected: 'Weak Key. The certificate's public key is weak: 1024 bits rsa.'
+- Also, other alerts for protocols and ciphers if configured.
+
+Command: nmap -p 443 --script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse localhost
