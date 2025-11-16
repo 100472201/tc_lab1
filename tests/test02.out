@@ -1,27 +1,28 @@
-# Nmap 7.91 scan initiated Sat Nov 15 15:05:27 2025 as: nmap -p 443 --script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse -oN test02.out localhost
+# Nmap 7.91 scan initiated Sun Nov 16 12:18:21 2025 as: nmap -p 443 --script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse -oN test02_new.out localhost
 Nmap scan report for localhost (127.0.0.1)
-Host is up (0.000089s latency).
+Host is up (0.00012s latency).
 Other addresses for localhost (not scanned): ::1
 
 PORT    STATE SERVICE
 443/tcp open  https
 | vulnTLSServer: **********************
-| CRITICAL ALERTS: 14
+| CRITICAL ALERTS: 15
 | **********************
 | - Self-Signed Certificate. The certificate is self-signed.
+| - Certificate signature uses SHA-1 (deprecated)
 | - Cipher includes CBC mode: TLS_RSA_WITH_AES_256_CBC_SHA256
 | - Cipher includes CBC mode: TLS_RSA_WITH_AES_128_CBC_SHA256
 | - Cipher uses SHA-1 or legacy SHA: TLS_RSA_WITH_RC4_128_SHA
+| - Cipher includes CBC mode and uses SHA-1 or legacy SHA: TLS_RSA_WITH_SEED_CBC_SHA
 | - Cipher includes CBC mode and uses SHA-1 or legacy SHA: TLS_RSA_WITH_CAMELLIA_256_CBC_SHA
+| - Cipher includes CBC mode and uses SHA-1 or legacy SHA: TLS_RSA_WITH_3DES_EDE_CBC_SHA
 | - Cipher includes CBC mode and uses SHA-1 or legacy SHA: TLS_DHE_RSA_WITH_AES_128_CBC_SHA
 | - Cipher includes CBC mode and uses SHA-1 or legacy SHA: TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA
 | - Cipher includes CBC mode and uses SHA-1 or legacy SHA: TLS_DHE_RSA_WITH_AES_256_CBC_SHA
 | - Cipher includes CBC mode and uses SHA-1 or legacy SHA: TLS_RSA_WITH_AES_256_CBC_SHA
-| - Cipher includes CBC mode and uses SHA-1 or legacy SHA: TLS_RSA_WITH_SEED_CBC_SHA
+| - Cipher includes CBC mode and uses SHA-1 or legacy SHA: TLS_RSA_WITH_AES_128_CBC_SHA
 | - Cipher includes CBC mode and uses SHA-1 or legacy SHA: TLS_RSA_WITH_CAMELLIA_128_CBC_SHA
 | - Cipher includes CBC mode and uses SHA-1 or legacy SHA: TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA
-| - Cipher includes CBC mode and uses SHA-1 or legacy SHA: TLS_RSA_WITH_AES_128_CBC_SHA
-| - Cipher includes CBC mode and uses SHA-1 or legacy SHA: TLS_RSA_WITH_3DES_EDE_CBC_SHA
 | **********************
 | **********************
 | HIGH ALERTS: 3
@@ -31,16 +32,17 @@ PORT    STATE SERVICE
 | - HSTS not configured. Strict-Transport-Security header is missing.
 | **********************
 | **********************
-| MEDIUM ALERTS: 1
+| MEDIUM ALERTS: 2
 | **********************
+| - Domain mismatch: localhost does not match CN *.localhost or SAN (*.localhost).
 | - Server information disclosure. Server header: Apache/2.4.48 (Debian)
 | **********************
 | **********************
 | LOW ALERTS: 3
 | **********************
-| - Non-Qualified Hostname. The certificate contains a non-qualified hostname: localhost.
-| - Non-Qualified Hostname. The certificate contains a non-qualified hostname: localhost.
 | - Certificate pinning not configured. Public-Key-Pins header is missing.
+| - Wildcard certificate detected: CN: *.localhost, SAN: *.localhost
+| - CN not fully qualified. CN should be a fully qualified domain name.
 |_**********************
 
-# Nmap done at Sat Nov 15 15:05:27 2025 -- 1 IP address (1 host up) scanned in 0.20 seconds
+# Nmap done at Sun Nov 16 12:18:21 2025 -- 1 IP address (1 host up) scanned in 0.27 seconds

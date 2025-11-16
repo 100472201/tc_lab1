@@ -1,6 +1,6 @@
 -- vulnTLSServer.nse
 -- Checks TLS/SSL server certificate for common weaknesses.
--- Author: (your name)
+-- Authors: Alejandro López Infante (100472201) and Iván Llorente Cano (100472242)
 
 local nmap = require "nmap"
 local stdnse = require "stdnse"

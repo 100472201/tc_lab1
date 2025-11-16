@@ -1,0 +1,5 @@
+Test 10 was intended to verify the trigger of the TLS compression alert by enabling and validating a server 
+configuration that uses TLS-level compression. However, the version of Apache available in the test environment 
+does not support or allow activation of the required compression module (TLS-level compression is no longer 
+implemented in modern Apache/OpenSSL stacks). As a result, it was not possible to enable this feature, and 
+the test could not be performed functionally.
