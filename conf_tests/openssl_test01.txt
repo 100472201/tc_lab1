@@ -1,8 +1,17 @@
-sudo openssl req -new -x509 \
-  -newkey rsa:2048 \
-  -keyout test01_good_key.pem \
-  -out test01_good_cert.pem \
-  -days 365 \
-  -nodes \
-  -subj "/CN=localhost" \
-  -addext "subjectAltName=DNS:localhost"
+# Commands to generate a vulnerable certificate for Test 01
+# This creates an expired, weak key, SHA-1 signed certificate
+
+# Generate weak private key (1024 bits)
+sudo openssl genrsa -out test01_good_key.pem 1024
+
+# Create extensions file for SAN
+echo "subjectAltName = DNS:localhost" | sudo tee ext01.cnf > /dev/null
+
+# Generate certificate signing request (CSR)
+sudo openssl req -new -key test01_good_key.pem -out test01.csr -subj "/CN=localhost"
+
+# Sign the certificate with SHA-1, expired (days 0 makes it expired immediately), and include SAN
+sudo openssl x509 -req -in test01.csr -signkey test01_good_key.pem -out test01_good_cert.pem -sha1 -days 0 -extfile ext01.cnf
+
+# Clean up CSR and ext file if not needed
+sudo rm test01.csr ext01.cnf

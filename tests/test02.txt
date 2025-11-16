@@ -1,33 +1,19 @@
-Description: Test of the script against a fully vulnerable "Bad Server" configuration (Test 02).
-This test combines a custom "bad" certificate (generated via openssl_test02.txt) and a weak server configuration (default-ssl-test02.conf).
-
-The certificate was intentionally created with:
-- A weak 1024-bit RSA key.
-- A SHA-1 signature.
-- 0-day lifespan (Expired).
-- A wildcard Common Name (CN).
-
-The server was configured to:
-- Allow weak protocols (TLS 1.0, TLS 1.1).
-- Offer multiple weak cipher suites (CBC/SHA1).
+Description: Test for detection of a weak certificate signature (SHA-1).
+This test uses the constant "weak server" configuration (allowing TLS 1.0, 1.1, and weak CBC ciphers)
+but swaps in the 'cert_test02_sha1.pem' certificate. This certificate
+was generated with a '-sha1' flag but is otherwise secure (2048-bit key, valid lifespan).
 
 Input:
 -p 443
---script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse
+--script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.lua
 localhost
 
-Output: The script is expected to detect all vulnerabilities configured.
-- Certificate Alerts (HIGH):
-  - 'Weak Key. ... 1024 bits rsa' 
-  - 'Expired Certificate' 
-- Server Alerts (HIGH):
-  - 'TLS 1.0 supported' [cite: 75]
-  - 'TLS 1.1 supported' [cite: 75]
-- Cipher Alerts (CRITICAL):
-  - Multiple 'Cipher includes CBC mode' and 'Cipher uses SHA-1' alerts [cite: 63-73].
-  - 'Certificate signature uses SHA-1 (deprecated)' 
-- Other Alerts:
-  - 'Wildcard certificate detected'[cite: 80].
-  - Note: The script incorrectly flags a 'Domain mismatch'[cite: 78], revealing a remaining bug in the script's wildcard handling logic.
+Output: The script is expected to detect all server-side and certificate-side weaknesses.
+- Server Alerts (Correct): 'TLS 1.0 supported', 'TLS 1.1 supported', and all 'CBC/SHA' cipher alerts.
+- Certificate Alerts (Correct):
+  - 'Self-Signed Certificate'.
+  - 'Certificate signature uses SHA-1 (deprecated)'.
+- The script should NOT report 'Weak Key' or 'Expired Certificate', as this specific certificate
+  does not have those flaws.
 
-Command: nmap -p 443 --script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse localhost
+Command: nmap -p 443 --script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.lua localhost
