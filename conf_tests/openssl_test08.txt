@@ -1,0 +1,8 @@
+sudo openssl req -new -x509 \
+  -newkey rsa:2048 \
+  -keyout cert_test08_ip.key \
+  -out cert_test08_ip.pem \
+  -days 365 \
+  -nodes \
+  -subj "/CN=127.0.0.1" \
+  -addext "subjectAltName=localhost,DNS:localhost"

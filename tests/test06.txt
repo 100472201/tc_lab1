@@ -1,8 +1,8 @@
 Description: Test for detection of non-qualified hostnames in a certificate.
 This test uses the "super-weak server" configuration (TLS 1.0+, 'ALL' ciphers)
-and swaps in the 'cert_test06_nonqualified.pem' certificate. This certificate
-was generated with non-qualified names ('localhost' and 'server') in its
-CN and SAN fields.
+and swaps in the 'cert_test06_notyetvalid.pem' certificate. This certificate
+was generated with openssl_test06.txt, is valid (from current date), and has
+non-qualified names ('localhost') in its CN and SAN fields.
 
 Input:
 -p 443
@@ -13,10 +13,8 @@ Output: The script is expected to detect all server-side and certificate-side we
 - Server Alerts (Correct): 'TLS 1.0 supported', 'TLS 1.1 supported', and all 'CBC/SHA' cipher alerts.
 - Certificate Alerts (Correct):
   - 'Self-Signed Certificate'.
-  - 'Expired Certificate. The certificate has expired.'
   - 'Non-Qualified Hostname. The certificate contains...: localhost'
-  - Wildcard certificate detected: SAN: *.tc.uc3m.es, SAN: *.test.tc.uc3m.es
-  - 'CN not fully qualified. CN should be a fully qualified domain name.'
 - The script should NOT report 'Domain mismatch' (since 'localhost' is in the SAN).
+- No 'Expired Certificate' or 'Invalid Certificate' alerts since the cert is valid.
 
 Command: nmap -p 443 --script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse localhost
