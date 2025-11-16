@@ -1,7 +1,8 @@
-Description: Test for detection of a weak certificate signature (SHA-1).
+Description: Test for detection of a long certificate lifespan.
 This test uses the constant "weak server" configuration (allowing TLS 1.0, 1.1, and weak CBC ciphers)
-but swaps in the 'cert_test02_sha1.pem' certificate. This certificate
-was generated with a '-sha1' flag but is otherwise secure (2048-bit key, valid lifespan).
+but swaps in the 'cert_test04_long.pem' certificate. This certificate
+was generated with a 5-year (1825 days) lifespan, which exceeds the
+366-day maximum.
 
 Input:
 -p 443
@@ -12,8 +13,8 @@ Output: The script is expected to detect all server-side and certificate-side we
 - Server Alerts (Correct): 'TLS 1.0 supported', 'TLS 1.1 supported', and all 'CBC/SHA' cipher alerts.
 - Certificate Alerts (Correct):
   - 'Self-Signed Certificate'.
-  - 'Certificate signature uses SHA-1 (deprecated)'.
-- The script should NOT report 'Weak Key' or 'Expired Certificate', as this specific certificate
-  does not have those flaws.
+  - 'Long Certificate Lifespan. The certificate lifespan is too long: 1825 days...'
+- The script should NOT report 'Weak Key' or 'Certificate signature uses SHA-1', as
+  this certificate is otherwise secure.
 
 Command: nmap -p 443 --script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse localhost

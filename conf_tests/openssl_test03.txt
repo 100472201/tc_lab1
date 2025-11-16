@@ -1,0 +1,8 @@
+sudo openssl req -new -x509 \
+  -newkey rsa:1024 \
+  -keyout cert_test03_rsa1024.key \
+  -out cert_test03_rsa1024.pem \
+  -days 365 \
+  -nodes \
+  -subj "/CN=localhost" \
+  -addext "subjectAltName=DNS:localhost"
