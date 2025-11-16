@@ -1,7 +1,7 @@
-Description: Test for detection of a weak certificate signature (SHA-1).
+Description: Test for detection of a certificate domain name mismatch.
 This test uses the constant "weak server" configuration (allowing TLS 1.0, 1.1, and weak CBC ciphers)
-but swaps in the 'cert_test02_sha1.pem' certificate. This certificate
-was generated with a '-sha1' flag but is otherwise secure (2048-bit key, valid lifespan).
+but swaps in the 'cert_test05_mismatch.pem' certificate. This certificate
+is only valid for 'bad.hostname.com' and does not match the scanned host, 'localhost'.
 
 Input:
 -p 443
@@ -12,8 +12,8 @@ Output: The script is expected to detect all server-side and certificate-side we
 - Server Alerts (Correct): 'TLS 1.0 supported', 'TLS 1.1 supported', and all 'CBC/SHA' cipher alerts.
 - Certificate Alerts (Correct):
   - 'Self-Signed Certificate'.
-  - 'Certificate signature uses SHA-1 (deprecated)'.
-- The script should NOT report 'Weak Key' or 'Expired Certificate', as this specific certificate
-  does not have those flaws.
+  - 'Domain mismatch: localhost does not match CN bad.hostname.com or SAN (...)'
+- The script should NOT report 'Weak Key', 'SHA-1', or 'Long Lifespan', as this
+  certificate is otherwise secure.
 
 Command: nmap -p 443 --script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse localhost

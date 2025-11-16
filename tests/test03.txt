@@ -5,7 +5,7 @@ was generated with a 1024-bit RSA key, which is below the 2048-bit minimum.
 
 Input:
 -p 443
---script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.lua
+--script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse
 localhost
 
 Output: The script is expected to detect all server-side and certificate-side weaknesses.

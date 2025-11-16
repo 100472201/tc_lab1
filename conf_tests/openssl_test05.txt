@@ -1,0 +1,8 @@
+sudo openssl req -new -x509 \
+  -newkey rsa:2048 \
+  -keyout cert_test05_mismatch.key \
+  -out cert_test05_mismatch.pem \
+  -days 365 \
+  -nodes \
+  -subj "/CN=bad.hostname.com" \
+  -addext "subjectAltName=DNS:bad.hostname.com,DNS:another.server.net"

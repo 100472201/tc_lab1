@@ -1,0 +1,8 @@
+sudo openssl req -new -x509 \
+  -newkey rsa:2048 \
+  -keyout cert_test06_nonqualified.key \
+  -out cert_test06_nonqualified.pem \
+  -days 365 \
+  -nodes \
+  -subj "/CN=server" \
+  -addext "subjectAltName=DNS:localhost,DNS:server"

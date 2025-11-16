@@ -1,0 +1,18 @@
+Description: Test for detection of a wildcard certificate.
+This test uses the "super-weak server" configuration (TLS 1.0+, 'ALL' ciphers)
+and swaps in the 'cert_test07_wildcard.pem' certificate. This certificate
+was generated using a wildcard CN ('*.localhost').
+
+Input:
+-p 443
+--script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse
+localhost
+
+Output: The script is expected to detect all server-side and certificate-side weaknesses.
+- Server Alerts (Correct): 'TLS 1.0 supported', 'TLS 1.1 supported', and all 'CBC/SHA' cipher alerts.
+- Certificate Alerts (Correct):
+  - 'Self-Signed Certificate'.
+  - 'Wildcard certificate detected: CN: *.localhost, SAN: *.localhost' (or similar).
+- This test should NOT report a 'Domain mismatch' because 'localhost' matches '*.localhost'.
+
+Command: nmap -p 443 --script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse localhost

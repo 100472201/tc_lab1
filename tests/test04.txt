@@ -6,7 +6,7 @@ was generated with a 5-year (1825 days) lifespan, which exceeds the
 
 Input:
 -p 443
---script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.lua
+--script=/home/kali/.local/share/nmap/scripts/vulnTLSServer.nse
 localhost
 
 Output: The script is expected to detect all server-side and certificate-side weaknesses.

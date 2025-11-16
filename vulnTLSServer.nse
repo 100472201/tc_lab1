@@ -1,0 +1,669 @@
+-- vulnTLSServer.nse
+-- Checks TLS/SSL server certificate for common weaknesses.
+-- Author: (your name)
+
+local nmap = require "nmap"
+local stdnse = require "stdnse"
+local shortport = require "shortport"
+local sslcert = require "sslcert"
+local datetime = require "datetime"
+local string = require "string"
+local table = require "table"
+local tls = require "tls"
+local http = require "http"
+
+description = [[
+Identify TLS certificate problems and basic TLS configuration weaknesses:
+- certificate checks (self-signed, signature hash, key type/size, validity period, CN/SANs, IPs, non-qualified names)
+- TLS config checks (protocol support for TLS1.2/1.3, detection of CBC/SHA suites acceptance, compression enabled)
+- Enhanced checks: HSTS, server info disclosure, TLS curves, DH params, wildcard scope, CN/SAN attributes, cipher preference, cert pinning
+]]
+
+categories = {"safe", "discovery"}
+
+portrule = shortport.port_or_service({443, 8443, 9443}, {"https", "https-alt", "ssl"})
+
+-- From ssl-cert.nse
+function stringify_name(name)
+  local fields = {}
+  local k, v
+  if not name then
+    return nil
+  end
+  for k, v in pairs(name) do
+    if type(k) == "table" then
+      k = table.concat(k, ".")
+    end
+    fields[#fields + 1] = string.format("%s=%s", k, v or '')
+  end
+  return table.concat(fields, "/")
+end
+
+-- Helper function to extract signature algorithm
+local function get_sig_alg(cert)
+  if not cert then return nil end
+  local direct = {
+    "sig_algorithm","sig_alg","signature_algorithm","signatureAlgorithm",
+    "signature_algo","sig_alg_name","sigAlgorithm"
+  }
+  for _,k in ipairs(direct) do
+    local v = cert[k]
+    if type(v)=="string" and #v>0 then return v end
+  end
+  for _,k in ipairs({"sig","signature","Signature"}) do
+    local t = cert[k]
+    if type(t)=="table" then
+      for _,kk in ipairs({"algorithm","alg","name","oid","oid_name","oidName"}) do
+        local v = t[kk]
+        if type(v)=="string" and #v>0 then return v end
+      end
+    end
+  end
+  return nil
+end
+
+-- Function to check if certificate signature is SHA-1
+local function cert_signature_is_sha1(cert)
+  local alg = get_sig_alg(cert)
+  if type(alg)=="string" and alg:lower():find("sha1",1,true) then return true end
+  local needles = { "1%.2%.840%.113549%.1%.1%.5", "1%.3%.14%.3%.2%.29" }
+  for _,k in ipairs({"sig","signature","Signature"}) do
+    local t = cert and cert[k]
+    if type(t)=="table" then
+      for _,kk in ipairs({"oid","algorithm","alg","name","oid_name","oidName"}) do
+        local v = t[kk]
+        if type(v)=="string" then
+          local s = v:lower()
+          if s:find("sha1",1,true) then return true end
+          for _,pat in ipairs(needles) do if v:find(pat) then return true end end
+        end
+      end
+    end
+  end
+  return false
+end
+
+-- Function to get DH params by performing a handshake with DHE cipher
+local function get_dh_params(host, port)
+  local sock = nmap.new_socket()
+  sock:set_timeout(5000)
+  local ok = sock:connect(host, port)
+  if not ok then return false end
+
+  -- Send client hello with DHE cipher
+  local t = {
+    protocol = "TLSv1.2",
+    ciphers = {"TLS_DHE_RSA_WITH_AES_128_CBC_SHA"},
+    extensions = {
+      server_name = tls.servername(host) and tls.EXTENSION_HELPERS["server_name"](tls.servername(host)),
+    }
+  }
+  local status, records = tls.client_hello(sock, t)
+  if not status then sock:close() return false end
+
+  -- Read server hello and key exchange
+  local buffer = ""
+  local i = 1
+  local record
+  i, record = tls.record_read(buffer, i)
+  if not record or record.type ~= "handshake" then sock:close() return false end
+
+  -- Parse server key exchange for DH params
+  if record.body and record.body.type == "server_key_exchange" then
+    local data = record.body.data
+    if data then
+      -- Parse DH params: p length (2 bytes), p, g length (2), g, y length (2), y
+      local pos = 1
+      local p_len = string.unpack(">I2", data, pos) pos = pos + 2
+      local p = data:sub(pos, pos + p_len - 1) pos = pos + p_len
+      local g_len = string.unpack(">I2", data, pos) pos = pos + 2
+      local g = data:sub(pos, pos + g_len - 1) pos = pos + g_len
+      -- y is public key, not needed for size
+      local dh_size = #p * 8
+      sock:close()
+      return true, {size = dh_size}
+    end
+  end
+
+  sock:close()
+  return false
+end
+
+action = function(host, port)
+  local alerts = {
+    critical = {},
+    high = {},
+    medium = {},
+    low = {}
+  }
+
+  -- helper to add alert with deduplication
+  local function add_alert(level, msg)
+    if not alerts[level] then alerts[level] = {} end
+    for _, v in ipairs(alerts[level]) do if v == msg then return end end
+    table.insert(alerts[level], msg)
+  end
+
+  local target_name = host.name or tls.servername(host) or host.targetname or host.ip
+  host.targetname = target_name
+
+  local status, cert = sslcert.getCertificate(host, port)
+  if ( not(status) ) then
+    stdnse.debug1("getCertificate error: %s", cert or "unknown")
+    return
+  end
+  stdnse.debug1("vulnTLSServer: cert signature algorithm=%s", tostring(get_sig_alg(cert)))
+
+  local cn = cert.subject and cert.subject.commonName or ""
+
+  -- CRITICAL ALERTS
+
+  -- 1. Check for self-signed certificate
+    -- Self-signed check: compare subject/issuer fields key-by-key (robusto contra orden)
+  local function is_self_signed(subject, issuer)
+    local keys = {}
+    for k,_ in pairs(subject or {}) do keys[k] = true end
+    for k,_ in pairs(issuer or {}) do keys[k] = true end
+    for k,_ in pairs(keys) do
+      local s = subject[k] or ""
+      local i = issuer[k] or ""
+      if s ~= i then
+        return false
+      end
+    end
+    return true
+  end
+
+  if is_self_signed(cert.subject, cert.issuer) then
+    table.insert(alerts.critical, "Self-Signed Certificate. The certificate is self-signed.")
+  end
+
+  -- 2. Check for CBC and SHA-1 in certificate signature (later on)  
+
+  -- 3. Check for compression support
+  local sock_compress = nmap.new_socket()
+  sock_compress:set_timeout(5000)
+  local status_compress, err_compress = sock_compress:connect(host, port)
+  if status_compress then
+    local status_hello, server_hello = tls.client_hello(sock_compress, nil, nil, { "DEFLATE" })
+    if status_hello and type(server_hello) == "table" and server_hello.compression_method and server_hello.compression_method == "DEFLATE" then
+      table.insert(alerts.critical, "Enable Compression. TLS compression must be disabled to protect against the CRIME vulnerability, which could allow attackers to recover sensitive information such as session cookies.")
+    end
+    sock_compress:close()
+  end
+
+
+  -- HIGH ALERTS
+
+  -- 1. Check for certificate type
+  if cert.pubkey.type == "rsa" then
+    if cert.pubkey.bits < 2048 then
+      table.insert(alerts.high, string.format("Weak Key. The certificate's public key is weak: %s bits %s.", cert.pubkey.bits, cert.pubkey.type))
+    end
+  elseif cert.pubkey.type == "ec" then
+    if cert.pubkey.ecdhparams.curve_params.curve ~= "secp256r1" then
+      table.insert(alerts.high, string.format("Weak Key. The certificate's public key is weak: %s curve.", cert.pubkey.ecdhparams.curve_params.curve))
+    end
+  else
+    table.insert(alerts.high, string.format("Unsupported Key Type. The certificate's public key type is not supported: %s.", cert.pubkey.type))
+  end
+
+  -- 2. SHA-1 certificate signature
+  if cert and cert_signature_is_sha1(cert) then
+    add_alert("critical", "Certificate signature uses SHA-1 (deprecated)")
+  end
+
+  -- 3. Check for supported protocols
+  local supported_protocols = {}
+  local protocols_to_check = {"TLSv1.3", "TLSv1.2", "TLSv1.1", "TLSv1.0"}
+  for _, proto in ipairs(protocols_to_check) do
+    local sock = nmap.new_socket()
+    sock:set_timeout(3000)
+    local ok = sock:connect(host, port)
+    if ok then
+      local status_hello = false
+      -- try sending client hello for this specific protocol
+      local ok_hello, _ = tls.client_hello(sock, proto)
+      if ok_hello then
+        table.insert(supported_protocols, proto)
+      end
+      sock:close()
+    end
+  end
+
+  local has_tls1_3 = false
+  local has_tls1_2 = false
+  local has_tls1_1 = false
+  local has_tls1_0 = false
+  for _, proto in ipairs(supported_protocols) do
+    if proto == "TLSv1.3" then has_tls1_3 = true end
+    if proto == "TLSv1.2" then has_tls1_2 = true end
+    if proto == "TLSv1.1" then has_tls1_1 = true end
+    if proto == "TLSv1.0" then has_tls1_0 = true end
+  end
+
+    -- Raise HIGH if server supports outdated protocols (TLS 1.0/1.1), even if modern ones are available, due to downgrade attack risks
+  if has_tls1_0 then
+    table.insert(alerts.high, "TLS 1.0 supported. Vulnerable to downgrade attacks.")
+  end
+  if has_tls1_1 then
+    table.insert(alerts.high, "TLS 1.1 supported. Vulnerable to downgrade attacks.")
+  end
+
+  -- =========================
+  -- TLS Curves Check
+  -- =========================
+  -- Recommended curves
+  local recommended_curves = {
+      ["X25519"] = true,
+      ["prime256v1"] = true,
+      ["secp384r1"] = true
+  }
+
+  -- List of curves to test
+  local tls_curves_to_test = {"X25519", "prime256v1", "secp384r1", "secp521r1", "secp224r1"}
+  local supported_curves = {}
+
+  for _, curve in ipairs(tls_curves_to_test) do
+      local sock = nmap.new_socket()
+      sock:set_timeout(3000)
+      local ok = sock:connect(host, port)
+      if ok then
+          local status, server_hello = tls.client_hello(sock, nil, nil, nil, {curve})
+          if status and server_hello and server_hello.selected_group == curve then
+              table.insert(supported_curves, curve)
+          end
+      end
+      sock:close()
+  end
+
+  -- check if the curves are unsupported
+  for _, curve in ipairs(supported_curves) do
+      if not recommended_curves[curve] then
+          table.insert(alerts.high, string.format(
+              "Unsupported TLS curve: %s. Recommended curves are X25519, prime256v1, secp384r1.", 
+              curve
+          ))
+      end
+  end
+
+  -- 5. Check DH parameter size
+  local status_dh, dh_params = get_dh_params(host, port)
+  if status_dh and dh_params and dh_params.size then
+    if dh_params.size < 2048 then
+      table.insert(alerts.high, string.format("Weak DH Parameter Size. DH parameters are %d bits, should be at least 2048 bits for TLS 1.2/1.3.", dh_params.size))
+    end
+  end
+
+  -- 6. Check for weak cipher suites
+    -- =========================
+  -- Autonomous cipher enumeration + robust canonicalization
+  -- Flags CRITICAL for CBC and SHA-1; HIGH for non-recommended suites.
+  -- =========================
+
+  -- Canonicalization: converts different formats to the same representation
+  local function canon(name)
+    if not name then return "" end
+    local s = name:upper()
+    s = s:gsub("^TLS_", ""):gsub("^SSL_", "")
+    s = s:gsub("_WITH_", "_")
+    s = s:gsub("%-", "_")
+    s = s:gsub("[^A-Z0-9_]", "")
+    s = s:gsub("__+", "_")
+    return s
+  end
+
+  -- Key token used for comparison
+  local function token_key(name)
+    local s = canon(name)
+    -- keep GCM/CHACHA and SHA tokens; remove other noise if necessary
+    -- ensure trailing underscores cleaned
+    s = s:gsub("_$", "")
+    return s
+  end
+
+  -- recommended list (as in the assignment) — keep in human-readable form
+  local recommended_ciphers = {
+    "ECDHE-ECDSA-AES_128-GCM-SHA256",
+    "ECDHE-RSA-AES_128-GCM-SHA256",
+    "ECDHE-ECDSA-AES_256-GCM-SHA384",
+    "ECDHE-RSA-AES_256-GCM-SHA384",
+    "ECDHE-ECDSA-CHACHA20-POLY1305",
+    "ECDHE-RSA-CHACHA20-POLY1305",
+    "DHE-RSA-AES_128-GCM-SHA256",
+    "DHE-RSA-AES_256-GCM-SHA384",
+    "DHE-RSA-CHACHA20-POLY1305"
+  }
+
+  -- build canonical lookup for recommended ciphers
+  local recommended_canonical = {}
+  for _, rc in ipairs(recommended_ciphers) do
+    recommended_canonical[token_key(rc)] = true
+  end
+
+  -- robust check if a cipher is recommended (accounts for format differences)
+  local function is_recommended(cipher_name)
+    if not cipher_name then return false end
+    local k = token_key(cipher_name)
+    if recommended_canonical[k] then return true end
+    -- fallback: check if any recommended key is a substring of k or viceversa
+    for rc,_ in pairs(recommended_canonical) do
+      if k:find(rc, 1, true) or rc:find(k, 1, true) then
+        return true
+      end
+    end
+    return false
+  end
+
+  -- Probe list (tune for performance / completeness). Autonomous (no ssl-enum-ciphers).
+  local probe_ciphers = {
+    -- legacy / CBC candidates (we want to detect these as CRITICAL)
+    "TLS_RSA_WITH_AES_128_CBC_SHA",
+    "TLS_RSA_WITH_AES_256_CBC_SHA",
+    "TLS_DHE_RSA_WITH_AES_128_CBC_SHA",
+    "TLS_DHE_RSA_WITH_AES_256_CBC_SHA",
+    "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+    "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+    "TLS_RSA_WITH_3DES_EDE_CBC_SHA",
+    "TLS_RSA_WITH_CAMELLIA_128_CBC_SHA",
+    "TLS_RSA_WITH_CAMELLIA_256_CBC_SHA",
+    "TLS_RSA_WITH_SEED_CBC_SHA",
+    "TLS_RSA_WITH_RC4_128_SHA",
+    -- modern / recommended
+    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+    "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+    "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+    "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
+    "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
+    "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256",
+    "TLS_DHE_RSA_WITH_AES_256_GCM_SHA384",
+    "TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
+    -- additional common variants
+    "TLS_RSA_WITH_AES_128_GCM_SHA256",
+    "TLS_RSA_WITH_AES_256_GCM_SHA384",
+    "TLS_RSA_WITH_AES_128_CBC_SHA256",
+    "TLS_RSA_WITH_AES_256_CBC_SHA256"
+  }
+
+  -- try multiple call signatures for tls.client_hello to handle NSE variations
+  local function try_cipher_probe(host, port, cipher_name, timeout_ms)
+    timeout_ms = timeout_ms or 2500
+    local sock = nmap.new_socket()
+    sock:set_timeout(timeout_ms)
+    local ok_conn = sock:connect(host, port)
+    if not ok_conn then
+      pcall(function() sock:close() end)
+      return false
+    end
+
+    local accepted_flag = false
+
+    -- signature variant A
+    local succ, res = pcall(function() return tls.client_hello(sock, nil, {cipher_name}) end)
+    if succ and res then accepted_flag = true end
+
+    -- variant B
+    if not accepted_flag then
+      succ, res = pcall(function() return tls.client_hello(sock, nil, nil, {cipher_name}) end)
+      if succ and res then accepted_flag = true end
+    end
+
+    -- variant C
+    if not accepted_flag then
+      succ, res = pcall(function() return tls.client_hello(sock, cipher_name) end)
+      if succ and res then accepted_flag = true end
+    end
+
+    pcall(function() sock:close() end)
+    return accepted_flag
+  end
+
+  -- perform probes (sequential; reduce list or increase timeouts as needed)
+  local accepted = {}
+  for _, c in ipairs(probe_ciphers) do
+    local ok = false
+    local succ, res = pcall(function() return try_cipher_probe(host, port, c, 2000) end)
+    if succ and res then ok = true end
+    if ok then accepted[c] = true end
+  end
+
+  -- if none detected, try a short fallback (to avoid false negatives in case of limited lists)
+  if next(accepted) == nil then
+    local short_probe = {
+      "TLS_RSA_WITH_AES_128_CBC_SHA",
+      "TLS_DHE_RSA_WITH_AES_128_CBC_SHA",
+      "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+    }
+    for _, c in ipairs(short_probe) do
+      local succ, res = pcall(function() return try_cipher_probe(host, port, c, 1800) end)
+      if succ and res then accepted[c] = true end
+    end
+  end
+
+  -- Analyze accepted ciphers: group into CBC, SHA-1, and non-recommended sets
+  local cbc_list = {}
+  local sha_list = {}
+  local both_list = {}
+  local nonrec_list = {}
+  local seen = {}
+
+  for cipher_name, _ in pairs(accepted) do
+    if seen[cipher_name] then goto continue end
+    seen[cipher_name] = true
+
+    local k = canon(cipher_name)
+
+    local has_cbc = k:find("CBC", 1, true)
+    local has_sha = k:find("SHA1", 1, true) or (k:find("_SHA", 1, true) and not (k:find("SHA256", 1, true) or k:find("SHA384", 1, true) or k:find("SHA512", 1, true) or k:find("SHA224", 1, true)))
+
+    if has_cbc and has_sha then
+      table.insert(both_list, cipher_name)
+    elseif has_cbc then
+      table.insert(cbc_list, cipher_name)
+    elseif has_sha then
+      table.insert(sha_list, cipher_name)
+    end
+
+    -- HIGH: not in recommended (we'll remove those already critical later)
+    if not is_recommended(cipher_name) then
+      table.insert(nonrec_list, cipher_name)
+    end
+
+    ::continue::
+  end
+
+  -- remove critical items from nonrec_list
+  local critical_map = {}
+  for _, c in ipairs(cbc_list) do critical_map[c] = true end
+  for _, c in ipairs(sha_list) do critical_map[c] = true end
+  for _, c in ipairs(both_list) do critical_map[c] = true end
+  local filtered_nonrec = {}
+  local seen_nr = {}
+  for _, c in ipairs(nonrec_list) do
+    if not critical_map[c] and not seen_nr[c] then
+      table.insert(filtered_nonrec, c)
+      seen_nr[c] = true
+    end
+  end
+
+  -- Emit individual alerts for each problematic cipher
+  for _, cipher in ipairs(cbc_list) do
+    add_alert("critical", "Cipher includes CBC mode: " .. cipher)
+  end
+  for _, cipher in ipairs(sha_list) do
+    add_alert("critical", "Cipher uses SHA-1 or legacy SHA: " .. cipher)
+  end
+  for _, cipher in ipairs(both_list) do
+    add_alert("critical", "Cipher includes CBC mode and uses SHA-1 or legacy SHA: " .. cipher)
+  end
+  for _, cipher in ipairs(filtered_nonrec) do
+    add_alert("high", "Unsupported cipher: " .. cipher)
+  end
+
+  -- Cipher preference: if client can choose weak ciphers, raise low alert
+  if #filtered_nonrec > 0 then
+    add_alert("low", "Weak Cipher Preference. Server configuration allows client to select non-recommended cipher suites.")
+  end
+
+  -- MEDIUM ALERTS
+  
+  -- 1. Certificate Lifespan: Check validity
+  local now = os.time()
+  -- Certificate validity times are in UTC, so adjust for timezone offset
+  local offset = - os.difftime(os.time(), os.time(os.date("!*t")))
+  local notBefore = os.time(cert.validity.notBefore) - offset
+  local notAfter = os.time(cert.validity.notAfter) - offset
+
+  if now < notBefore then
+    table.insert(alerts.high, "Invalid Certificate. The certificate is not yet valid.")
+  end
+  if now > notAfter then
+    table.insert(alerts.high, "Expired Certificate. The certificate has expired.")
+  end
+
+  local lifespan_days = (notAfter - notBefore) / (60 * 60 * 24)
+  if lifespan_days < 90 then
+    table.insert(alerts.medium, string.format("Short Certificate Lifespan. The certificate lifespan is too short: %.0f days (less than 90 days).", lifespan_days))
+  end
+  if lifespan_days > 366 then
+    table.insert(alerts.medium, string.format("Long Certificate Lifespan. The certificate lifespan is too long: %.0f days (more than 366 days).", lifespan_days))
+  end
+
+  -- 2. Check for domain name mismatch
+  local subject_alt_names = {}
+  if cert.extensions then
+    for _, e in ipairs(cert.extensions) do
+      if e.name == "X509v3 Subject Alternative Name" then
+        for name in string.gmatch(e.value, "DNS:([^,]+)") do
+          table.insert(subject_alt_names, name)
+        end
+      end
+    end
+  end
+
+  local matches_cn = (cn and host.targetname:match(cn:gsub("*", ".*")))
+  local matches_san = false
+  for _, san in ipairs(subject_alt_names) do
+    if host.targetname:match(san:gsub("*", ".*")) then
+      matches_san = true
+      break
+    end
+  end
+
+  if not matches_cn and not matches_san then
+    table.insert(alerts.medium, string.format("Domain mismatch: %s does not match CN %s or SAN (%s).", host.targetname, cn, table.concat(subject_alt_names, ", ")))
+  end
+
+  -- LOW ALERTS
+
+  -- 1. Check for non-qualified hostnames and IP addresses in certificate
+  local names_to_check = {}
+  if cn then
+    table.insert(names_to_check, cn)
+  end
+  for _, san in ipairs(subject_alt_names) do
+    table.insert(names_to_check, san)
+  end
+
+  for _, name in ipairs(names_to_check) do
+    if not string.find(name, "%.") then
+      table.insert(alerts.low, string.format("Non-Qualified Hostname. The certificate contains a non-qualified hostname: %s.", name))
+    end
+    if string.match(name, "^%d+.%d+.%d+.%d+$") then
+      table.insert(alerts.low, string.format("IP Address in Certificate. The certificate contains an IP address: %s.", name))
+    end
+  end
+
+  -- Enhanced checks
+
+  -- HTTP checks for HSTS, server disclosure, cert pinning
+  local http_req = http.get(host, port, '/')
+  if http_req and http_req.header then
+    -- HSTS
+    local hsts = http_req.header['strict-transport-security'] or http_req.header['Strict-Transport-Security']
+    if not hsts then
+      table.insert(alerts.high, "HSTS not configured. Strict-Transport-Security header is missing.")
+    else
+      local max_age_str = hsts:match("max%-age=(%d+)")
+      if max_age_str then
+        local max_age = tonumber(max_age_str)
+        if max_age < 63072000 then
+          table.insert(alerts.medium, string.format("HSTS max-age too short. Current: %d seconds, should be at least 63072000 (2 years).", max_age))
+        end
+      end
+    end
+
+    -- Server info disclosure
+    local server = http_req.header['server'] or http_req.header['Server']
+    if server then
+      -- Check for version numbers or server type
+      if server:match("%d+%.%d+") or server:lower():find("apache") or server:lower():find("nginx") or server:lower():find("iis") then
+        table.insert(alerts.medium, string.format("Server information disclosure. Server header: %s", server))
+      end
+    end
+
+    -- Cert pinning
+    local pkp = http_req.header['public-key-pins'] or http_req.header['Public-Key-Pins'] or http_req.header['public-key-pins-report-only'] or http_req.header['Public-Key-Pins-Report-Only']
+    if not pkp then
+      table.insert(alerts.low, "Certificate pinning not configured. Public-Key-Pins header is missing.")
+    end
+  end
+
+  -- Enhanced certificate checks
+
+  -- Wildcard scope: alert for any wildcard in CN or SAN
+  local wildcard_names = {}
+  if cn and string.find(cn, "^%*%.") then
+    table.insert(wildcard_names, "CN: " .. cn)
+  end
+  for _, san in ipairs(subject_alt_names) do
+    if string.find(san, "^%*%.") then
+      table.insert(wildcard_names, "SAN: " .. san)
+    end
+  end
+  if #wildcard_names > 0 then
+    table.insert(alerts.low, "Wildcard certificate detected: " .. table.concat(wildcard_names, ", "))
+  end
+
+  -- CN and SAN attributes
+  if cn and not cn:find("%.%.") and cn ~= "localhost" then
+    table.insert(alerts.low, "CN not fully qualified. CN should be a fully qualified domain name.")
+  end
+
+  -- If SAN exists, check if CN is in SAN
+  if #subject_alt_names > 0 and cn then
+    local cn_in_san = false
+    for _, san in ipairs(subject_alt_names) do
+      if san == cn then cn_in_san = true; break end
+    end
+    if not cn_in_san then
+      table.insert(alerts.low, string.format("CN '%s' not in SAN. SAN contains: %s. For compatibility, CN should be included in Subject Alternative Names.", cn, table.concat(subject_alt_names, ", ")))
+    end
+  end
+
+  -- Cipher preference: checked above with low alert if non-recommended ciphers are accepted
+
+  -- TLS curves and DH params checks added above
+
+  local output_lines = {}
+  local severities = {"critical", "high", "medium", "low"}
+
+  for _, severity in ipairs(severities) do
+    if alerts[severity] and #alerts[severity] > 0 then
+      table.insert(output_lines, "**********************")
+      table.insert(output_lines, string.format("%s ALERTS: %d", string.upper(severity), #alerts[severity]))
+      table.insert(output_lines, "**********************")
+      for _, msg in ipairs(alerts[severity]) do
+        table.insert(output_lines, "- " .. msg)
+      end
+      table.insert(output_lines, "**********************")
+    end
+  end
+
+  if #output_lines > 0 then
+    return table.concat(output_lines, "\n")
+  else
+    return nil
+  end
+end

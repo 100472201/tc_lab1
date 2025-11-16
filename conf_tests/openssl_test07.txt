@@ -1,0 +1,8 @@
+sudo openssl req -new -x509 \
+  -newkey rsa:2048 \
+  -keyout cert_test07_wildcard.key \
+  -out cert_test07_wildcard.pem \
+  -days 365 \
+  -nodes \
+  -subj "/CN=*.localhost" \
+  -addext "subjectAltName=DNS:*.localhost,DNS:localhost"
